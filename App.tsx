@@ -332,8 +332,80 @@ const setupAdmin = () => {
  return <SafeAreaView style={s.safe}><StatusBar barStyle="light-content" backgroundColor={C.forest}/><View style={s.top}><View><Text style={s.brandSmall}>Laundri<Text style={{color:C.mint}}>Flow</Text></Text><Text style={s.brandSub}>{isAdmin?"ADMIN MANAGEMENT":"CUSTOMER PORTAL"}</Text></View><TouchableOpacity onPress={logout} style={s.logout}><Ionicons name="log-out-outline" color="#F5C6BD" size={17}/><Text style={{color:"#F5C6BD",fontWeight:"700"}}> Logout</Text></TouchableOpacity></View>
  <View style={s.nav}>{pages.map(nav)}</View>
  <ScrollView contentContainerStyle={s.content}>
- {page==="Dashboard"&&isAdmin&&<><View style={s.banner}><Text style={s.bannerKicker}>ADMIN WORKSPACE</Text><Text style={s.bannerTitle}>Good day, Administrator</Text><Text style={s.bannerSub}>Manage laundry operations from one place.</Text></View><View style={s.stats}><Stat label="Total orders" value={String(store.orders.length)}/><Stat label="In process" value={String(store.orders.filter(o=>!["Completed","Ready for Pickup","Picked Up","Delivered"].includes(o.status)).length)}/><Stat label="Revenue collected" value={money(totalRevenue)}/><Stat label="Customers" value={String(store.accounts.filter(a=>a.role==="customer").length)}/></View><Section title="Recent laundry orders"/>{store.orders.slice(0,5).map(o=><OrderCard key={o.id} o={o} admin onStatus={v=>updateOrder(o.id,{status:v})} onPayment={v=>updateOrder(o.id,{payment:v})} onPaid={v=>{const paid=Math.max(0,Math.min(o.amount,Number(v)||0));updateOrder(o.id,{paid,payment:paid>=o.amount?"Paid":paid>0?"Partially Paid":"Unpaid"})}} paymentValue={paymentInput[o.id]??String(o.paid)} setPaymentValue={v=>setPaymentInput(p=>({...p,[o.id]:v}))}/>)}</>}
- {page==="Dashboard"&&!isAdmin&&<><View style={s.banner}><Text style={s.bannerKicker}>CUSTOMER PORTAL</Text><Text style={s.bannerTitle}>Hello, {account.name}</Text><Text style={s.bannerSub}>Track your laundry, payments, and pickup or delivery.</Text></View><View style={s.stats}><Stat label="My orders" value={String(myOrders.length)}/><Stat label="In process" value={String(myOrders.filter(o=>!["Completed","Picked Up","Delivered"].includes(o.status)).length)}/><Stat label="Outstanding" value={money(myOrders.reduce((a,o)=>a+(o.amount-o.paid),0))}/></View><Section title="My latest laundry"/>{myOrders.slice(0,4).map(o=><OrderCard key={o.id} o={o}/>) }{myOrders.length===0&&<Empty text="You have no laundry orders yet. Place your first order to get started."/>}</>}
+ {page==="Dashboard"&&isAdmin&&<>
+    <View style={s.banner}>
+      <Text style={s.bannerKicker}>ADMIN WORKSPACE</Text>
+      <Text style={s.bannerTitle}>Good day, Administrator</Text>
+      <Text style={s.bannerSub}>Monitor every laundry order, payment, pickup, and delivery.</Text>
+    </View>
+
+    <View style={s.stats}>
+      <Stat label="Total orders" value={String(store.orders.length)}/>
+      <Stat label="In process" value={String(store.orders.filter(o=>!["Completed","Ready for Pickup","Picked Up","Delivered"].includes(o.status)).length)}/>
+      <Stat label="Revenue collected" value={money(totalRevenue)}/>
+      <Stat label="Customers" value={String(store.accounts.filter(a=>a.role==="customer").length)}/>
+      <Stat label="Unpaid / Partial" value={String(store.orders.filter(o=>o.payment!=="Paid").length)}/>
+      <Stat label="Outstanding balance" value={money(store.orders.reduce((sum,o)=>sum+Math.max(0,o.amount-o.paid),0))}/>
+    </View>
+
+    <Section title="Payment follow-up" sub="Customers with unpaid or partially paid laundry orders."/>
+    {store.orders.filter(o=>o.payment!=="Paid").length===0
+      ? <Empty text="Great! There are no unpaid or partially paid orders."/>
+      : store.orders.filter(o=>o.payment!=="Paid").map(o=>
+        <View key={"due-"+o.id} style={s.card}>
+          <View style={s.rowBetween}>
+            <View style={{flex:1}}>
+              <Text style={s.orderId}>{o.id}</Text>
+              <Text style={s.itemTitle}>{o.customerName}</Text>
+            </View>
+            <Tag text={o.payment} color={o.payment==="Unpaid"?C.red:C.amber}/>
+          </View>
+          <Text style={s.body}>{o.service} · {o.weight} kg · {o.fulfillment}</Text>
+          <View style={[s.rowBetween,{marginTop:10}]}>
+            <View><Text style={s.muted}>Total price</Text><Text style={s.price}>{money(o.amount)}</Text></View>
+            <View><Text style={s.muted}>Amount paid</Text><Text style={s.price}>{money(o.paid)}</Text></View>
+            <View><Text style={s.muted}>Balance due</Text><Text style={[s.price,{color:C.red}]}>{money(Math.max(0,o.amount-o.paid))}</Text></View>
+          </View>
+        </View>
+      )
+    }
+
+    <Section title="Pickup & delivery monitoring" sub="Check which laundry orders are waiting, picked up, or delivered."/>
+    {store.orders.filter(o=>["Ready for Pickup","Picked Up","For Delivery","Delivered"].includes(o.status)).length===0
+      ? <Empty text="No orders have reached pickup or delivery yet."/>
+      : store.orders.filter(o=>["Ready for Pickup","Picked Up","For Delivery","Delivered"].includes(o.status)).map(o=>
+        <View key={"fulfillment-"+o.id} style={s.listRow}>
+          <View style={{flex:1}}>
+            <Text style={s.orderId}>{o.id}</Text>
+            <Text style={s.itemTitle}>{o.customerName}</Text>
+            <Text style={s.muted}>{o.service} · {o.fulfillment}</Text>
+          </View>
+          <Tag text={o.status} color={o.status==="Delivered"||o.status==="Picked Up"?C.green:C.amber}/>
+        </View>
+      )
+    }
+
+    <Section title="All laundry orders" sub="Complete order details, service, price, payment, and status controls."/>
+    {store.orders.length===0
+      ? <Empty text="No laundry orders have been submitted yet."/>
+      : store.orders.map(o=>
+        <OrderCard
+          key={o.id}
+          o={o}
+          admin
+          onStatus={v=>updateOrder(o.id,{status:v})}
+          onPayment={v=>updateOrder(o.id,{payment:v})}
+          onPaid={v=>{
+            const paid=Math.max(0,Math.min(o.amount,Number(v)||0));
+            updateOrder(o.id,{paid,payment:paid>=o.amount?"Paid":paid>0?"Partially Paid":"Unpaid"});
+          }}
+          paymentValue={paymentInput[o.id]??String(o.paid)}
+          setPaymentValue={v=>setPaymentInput(p=>({...p,[o.id]:v}))}
+        />
+      )
+    }
+  </>}
+  {page==="Dashboard"&&!isAdmin&&<><View style={s.banner}><Text style={s.bannerKicker}>CUSTOMER PORTAL</Text><Text style={s.bannerTitle}>Hello, {account.name}</Text><Text style={s.bannerSub}>Track your laundry, payments, and pickup or delivery.</Text></View><View style={s.stats}><Stat label="My orders" value={String(myOrders.length)}/><Stat label="In process" value={String(myOrders.filter(o=>!["Completed","Picked Up","Delivered"].includes(o.status)).length)}/><Stat label="Outstanding" value={money(myOrders.reduce((a,o)=>a+(o.amount-o.paid),0))}/></View><Section title="My latest laundry"/>{myOrders.slice(0,4).map(o=><OrderCard key={o.id} o={o}/>) }{myOrders.length===0&&<Empty text="You have no laundry orders yet. Place your first order to get started."/>}</>}
  {page==="Orders"&&isAdmin&&<><Section title="All laundry orders" sub="Update laundry progress, payment, pickup, and delivery status."/>{store.orders.map(o=><OrderCard key={o.id} o={o} admin onStatus={v=>updateOrder(o.id,{status:v})} onPayment={v=>updateOrder(o.id,{payment:v})} onPaid={v=>{const paid=Math.max(0,Math.min(o.amount,Number(v)||0));updateOrder(o.id,{paid,payment:paid>=o.amount?"Paid":paid>0?"Partially Paid":"Unpaid"})}} paymentValue={paymentInput[o.id]??String(o.paid)} setPaymentValue={v=>setPaymentInput(p=>({...p,[o.id]:v}))}/>)}</>}
  {page==="Place Order"&&!isAdmin&&<><Section title="Place a laundry order" sub="Choose a service and submit your laundry details."/><View style={s.card}><Text style={s.label}>LAUNDRY SERVICE</Text>{services.map(x=><TouchableOpacity key={x.name} onPress={()=>setService(x.name)} style={[s.choice,service===x.name&&s.choiceOn]}><Text style={s.body}>{x.name}</Text><Text style={s.price}>{money(x.rate)} / kg {service===x.name?"✓":""}</Text></TouchableOpacity>)}<Text style={s.label}>WEIGHT (KG)</Text><Input value={weight} onChangeText={setWeight} placeholder="Enter weight" keyboardType="decimal-pad"/><Text style={s.label}>FULFILLMENT METHOD</Text><View style={s.row}><Btn label="Pickup" kind={fulfillment==="Pickup"?"primary":"soft"} onPress={()=>setFulfillment("Pickup")}/><Btn label="Delivery" kind={fulfillment==="Delivery"?"primary":"soft"} onPress={()=>setFulfillment("Delivery")}/></View><View style={s.total}><Text style={s.muted}>Estimated total</Text><Text style={s.totalAmount}>{money((services.find(x=>x.name===service)?.rate||50)*(Number(weight)||0))}</Text></View><Btn label="Submit laundry order" onPress={createOrder}/></View></>}
  {page==="My Laundry"&&!isAdmin&&<><Section title="My laundry tracking" sub="Only your own laundry orders are displayed."/>{myOrders.map(o=><OrderCard key={o.id} o={o}/>) }{myOrders.length===0&&<Empty text="No orders found. Use Place Order to create one."/>}</>}
