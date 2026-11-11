@@ -42,8 +42,13 @@ const seed: Store = {
   duty: ["Alex Worker", "Jamie Driver"]
 };
 const services=[{name:"Wash, Dry & Fold",rate:50},{name:"Wash & Dry",rate:40},{name:"Wash Only",rate:30},{name:"Dry Cleaning",rate:100}];
-const orderStatuses:OrderStatus[]=["Received","Washing","Drying","Ironing","Completed","Ready for Pickup","Picked Up","For Delivery","Delivered"];
-const paymentStatuses:PaymentStatus[]=["Unpaid","Partially Paid","Paid"];
+const laundryProcessStatuses:OrderStatus[]=["Received","Washing","Drying","Ironing","Completed"];
+const fulfillmentStatuses=(method:"Pickup"|"Delivery"):OrderStatus[] =>
+  method==="Pickup"
+    ? ["Ready for Pickup","Picked Up"]
+    : ["For Delivery","Delivered"];
+const orderStatusesFor=(method:"Pickup"|"Delivery"):OrderStatus[] =>
+  [...laundryProcessStatuses,...fulfillmentStatuses(method)];
 const money=(n:number)=>"₱"+n.toFixed(2);
 const id=()=>Math.random().toString(36).slice(2,7).toUpperCase();
 function Btn({label,onPress,kind="primary"}:{label:string;onPress:()=>void;kind?:"primary"|"soft"|"danger"}){return <TouchableOpacity onPress={onPress} style={[s.btn,kind==="soft"&&s.btnSoft,kind==="danger"&&s.btnDanger]}><Text style={[s.btnText,kind==="soft"&&{color:C.forest}]}>{label}</Text></TouchableOpacity>}
@@ -163,7 +168,48 @@ const setupAdmin = () => {
    setPage("Dashboard");
  };
  const createOrder=()=>{const kg=Number(weight);if(!Number.isFinite(kg)||kg<=0){Alert.alert("Invalid weight","Enter a valid laundry weight.");return}const rate=services.find(x=>x.name===service)?.rate||50;const o:Order={id:"LF-"+Date.now().toString().slice(-6),customerId:account!.id,customerName:account!.name,service,weight:kg,amount:rate*kg,paid:0,payment:"Unpaid",status:"Received",fulfillment,createdAt:new Date().toLocaleDateString()};setStore(v=>({...v,orders:[o,...v.orders]}));setWeight("1");Alert.alert("Order submitted",`Your order ${o.id} has been created. Total: ${money(o.amount)}`);setPage("My Laundry");};
- const updateOrder=(orderId:string,patch:Partial<Order>)=>setStore(v=>({...v,orders:v.orders.map(o=>o.id===orderId?{...o,...patch}:o)}));
+ const updateOrder=(orderId:string,patch:Partial<Order>)=>setStore(v=>({...v,orders:v.orders.map(o=>{
+   if(o.id!==orderId)return o;
+   const isAlreadyFullyPaid=o.amount>0&&o.paid>=o.amount;
+   if(isAlreadyFullyPaid&&("paid" in patch||"payment" in patch))return o;
+   const terminalStatuses:OrderStatus[]=["Picked Up","Delivered"];
+   if(terminalStatuses.includes(o.status))return o;
+   if(patch.status&&!orderStatusesFor(o.fulfillment).includes(patch.status))return o;
+   // Delivery cannot be marked delivered until the full laundry amount is paid.
+   if(patch.status==="Delivered" && o.paid < o.amount)return o;
+   return {...o,...patch};
+ })}));
+ const recordPayment=(orderId:string,amountText:string)=>{
+   const order=store.orders.find(o=>o.id===orderId);
+   if(!order)return;
+   const currentPaid=Math.max(0,Math.min(order.amount,order.paid));
+   const balance=Math.max(0,order.amount-currentPaid);
+   if(balance<=0){
+     Alert.alert("Fully Paid","This customer is totally paid. The payment record is locked and can no longer be changed.");
+     return;
+   }
+   const received=Number(amountText);
+   if(!Number.isFinite(received)||received<=0){
+     Alert.alert("Invalid payment","Enter an amount greater than ₱0.00.");
+     return;
+   }
+   if(received>balance){
+     Alert.alert("Amount exceeds balance",`The remaining balance is ${money(balance)}. Enter an amount up to ${money(balance)}.`);
+     return;
+   }
+   const newPaid=currentPaid+received;
+   const fullyPaid=newPaid>=order.amount;
+   updateOrder(orderId,{
+     paid:newPaid,
+     payment:fullyPaid?"Paid":newPaid>0?"Partially Paid":"Unpaid"
+   });
+   setPaymentInput(prev=>({...prev,[orderId]:""}));
+   if(fullyPaid){
+     Alert.alert("Payment completed","This customer is totally paid. The payment record is now locked.");
+   }else{
+     Alert.alert("Payment saved",`${money(received)} received. Remaining balance: ${money(order.amount-newPaid)}.`);
+   }
+ };
  const addProduct=()=>{const price=Number(productPrice),stock=Number(productStock);if(!productName.trim()||price<=0||stock<0){Alert.alert("Invalid product","Enter a product name, valid price, and stock quantity.");return}setStore(v=>({...v,products:[...v.products,{id:"P-"+id(),name:productName.trim(),price,stock,unit:productUnit}]}));setProductName("");setProductPrice("");setProductStock("");};
  const addStaff=()=>{if(!staffName.trim())return;setStore(v=>({...v,duty:[...v.duty,staffName.trim()]}));setStaffName("");};
  if(!ready)return <SafeAreaView style={s.center}><Text style={s.muted}>Loading LaundriFlow…</Text></SafeAreaView>;
@@ -332,81 +378,9 @@ const setupAdmin = () => {
  return <SafeAreaView style={s.safe}><StatusBar barStyle="light-content" backgroundColor={C.forest}/><View style={s.top}><View><Text style={s.brandSmall}>Laundri<Text style={{color:C.mint}}>Flow</Text></Text><Text style={s.brandSub}>{isAdmin?"ADMIN MANAGEMENT":"CUSTOMER PORTAL"}</Text></View><TouchableOpacity onPress={logout} style={s.logout}><Ionicons name="log-out-outline" color="#F5C6BD" size={17}/><Text style={{color:"#F5C6BD",fontWeight:"700"}}> Logout</Text></TouchableOpacity></View>
  <View style={s.nav}>{pages.map(nav)}</View>
  <ScrollView contentContainerStyle={s.content}>
- {page==="Dashboard"&&isAdmin&&<>
-    <View style={s.banner}>
-      <Text style={s.bannerKicker}>ADMIN WORKSPACE</Text>
-      <Text style={s.bannerTitle}>Good day, Administrator</Text>
-      <Text style={s.bannerSub}>Monitor every laundry order, payment, pickup, and delivery.</Text>
-    </View>
-
-    <View style={s.stats}>
-      <Stat label="Total orders" value={String(store.orders.length)}/>
-      <Stat label="In process" value={String(store.orders.filter(o=>!["Completed","Ready for Pickup","Picked Up","Delivered"].includes(o.status)).length)}/>
-      <Stat label="Revenue collected" value={money(totalRevenue)}/>
-      <Stat label="Customers" value={String(store.accounts.filter(a=>a.role==="customer").length)}/>
-      <Stat label="Unpaid / Partial" value={String(store.orders.filter(o=>o.payment!=="Paid").length)}/>
-      <Stat label="Outstanding balance" value={money(store.orders.reduce((sum,o)=>sum+Math.max(0,o.amount-o.paid),0))}/>
-    </View>
-
-    <Section title="Payment follow-up" sub="Customers with unpaid or partially paid laundry orders."/>
-    {store.orders.filter(o=>o.payment!=="Paid").length===0
-      ? <Empty text="Great! There are no unpaid or partially paid orders."/>
-      : store.orders.filter(o=>o.payment!=="Paid").map(o=>
-        <View key={"due-"+o.id} style={s.card}>
-          <View style={s.rowBetween}>
-            <View style={{flex:1}}>
-              <Text style={s.orderId}>{o.id}</Text>
-              <Text style={s.itemTitle}>{o.customerName}</Text>
-            </View>
-            <Tag text={o.payment} color={o.payment==="Unpaid"?C.red:C.amber}/>
-          </View>
-          <Text style={s.body}>{o.service} · {o.weight} kg · {o.fulfillment}</Text>
-          <View style={[s.rowBetween,{marginTop:10}]}>
-            <View><Text style={s.muted}>Total price</Text><Text style={s.price}>{money(o.amount)}</Text></View>
-            <View><Text style={s.muted}>Amount paid</Text><Text style={s.price}>{money(o.paid)}</Text></View>
-            <View><Text style={s.muted}>Balance due</Text><Text style={[s.price,{color:C.red}]}>{money(Math.max(0,o.amount-o.paid))}</Text></View>
-          </View>
-        </View>
-      )
-    }
-
-    <Section title="Pickup & delivery monitoring" sub="Check which laundry orders are waiting, picked up, or delivered."/>
-    {store.orders.filter(o=>["Ready for Pickup","Picked Up","For Delivery","Delivered"].includes(o.status)).length===0
-      ? <Empty text="No orders have reached pickup or delivery yet."/>
-      : store.orders.filter(o=>["Ready for Pickup","Picked Up","For Delivery","Delivered"].includes(o.status)).map(o=>
-        <View key={"fulfillment-"+o.id} style={s.listRow}>
-          <View style={{flex:1}}>
-            <Text style={s.orderId}>{o.id}</Text>
-            <Text style={s.itemTitle}>{o.customerName}</Text>
-            <Text style={s.muted}>{o.service} · {o.fulfillment}</Text>
-          </View>
-          <Tag text={o.status} color={o.status==="Delivered"||o.status==="Picked Up"?C.green:C.amber}/>
-        </View>
-      )
-    }
-
-    <Section title="All laundry orders" sub="Complete order details, service, price, payment, and status controls."/>
-    {store.orders.length===0
-      ? <Empty text="No laundry orders have been submitted yet."/>
-      : store.orders.map(o=>
-        <OrderCard
-          key={o.id}
-          o={o}
-          admin
-          onStatus={v=>updateOrder(o.id,{status:v})}
-          onPayment={v=>updateOrder(o.id,{payment:v})}
-          onPaid={v=>{
-            const paid=Math.max(0,Math.min(o.amount,Number(v)||0));
-            updateOrder(o.id,{paid,payment:paid>=o.amount?"Paid":paid>0?"Partially Paid":"Unpaid"});
-          }}
-          paymentValue={paymentInput[o.id]??String(o.paid)}
-          setPaymentValue={v=>setPaymentInput(p=>({...p,[o.id]:v}))}
-        />
-      )
-    }
-  </>}
-  {page==="Dashboard"&&!isAdmin&&<><View style={s.banner}><Text style={s.bannerKicker}>CUSTOMER PORTAL</Text><Text style={s.bannerTitle}>Hello, {account.name}</Text><Text style={s.bannerSub}>Track your laundry, payments, and pickup or delivery.</Text></View><View style={s.stats}><Stat label="My orders" value={String(myOrders.length)}/><Stat label="In process" value={String(myOrders.filter(o=>!["Completed","Picked Up","Delivered"].includes(o.status)).length)}/><Stat label="Outstanding" value={money(myOrders.reduce((a,o)=>a+(o.amount-o.paid),0))}/></View><Section title="My latest laundry"/>{myOrders.slice(0,4).map(o=><OrderCard key={o.id} o={o}/>) }{myOrders.length===0&&<Empty text="You have no laundry orders yet. Place your first order to get started."/>}</>}
- {page==="Orders"&&isAdmin&&<><Section title="All laundry orders" sub="Update laundry progress, payment, pickup, and delivery status."/>{store.orders.map(o=><OrderCard key={o.id} o={o} admin onStatus={v=>updateOrder(o.id,{status:v})} onPayment={v=>updateOrder(o.id,{payment:v})} onPaid={v=>{const paid=Math.max(0,Math.min(o.amount,Number(v)||0));updateOrder(o.id,{paid,payment:paid>=o.amount?"Paid":paid>0?"Partially Paid":"Unpaid"})}} paymentValue={paymentInput[o.id]??String(o.paid)} setPaymentValue={v=>setPaymentInput(p=>({...p,[o.id]:v}))}/>)}</>}
+ {page==="Dashboard"&&isAdmin&&<><View style={s.banner}><Text style={s.bannerKicker}>ADMIN WORKSPACE</Text><Text style={s.bannerTitle}>Good day, Administrator</Text><Text style={s.bannerSub}>Manage laundry operations from one place.</Text></View><View style={s.stats}><Stat label="Total orders" value={String(store.orders.length)}/><Stat label="In process" value={String(store.orders.filter(o=>!["Completed","Ready for Pickup","Picked Up","Delivered"].includes(o.status)).length)}/><Stat label="Revenue collected" value={money(totalRevenue)}/><Stat label="Customers" value={String(store.accounts.filter(a=>a.role==="customer").length)}/></View></>}
+ {page==="Dashboard"&&!isAdmin&&<><View style={s.banner}><Text style={s.bannerKicker}>CUSTOMER PORTAL</Text><Text style={s.bannerTitle}>Hello, {account.name}</Text><Text style={s.bannerSub}>Track your laundry, payments, and pickup or delivery.</Text></View><View style={s.stats}><Stat label="My orders" value={String(myOrders.length)}/><Stat label="In process" value={String(myOrders.filter(o=>!["Completed","Picked Up","Delivered"].includes(o.status)).length)}/><Stat label="Outstanding" value={money(myOrders.reduce((a,o)=>a+(o.amount-o.paid),0))}/></View><Section title="My latest laundry"/>{myOrders.slice(0,4).map(o=><OrderCard key={o.id} o={o}/>) }{myOrders.length===0&&<Empty text="You have no laundry orders yet. Place your first order to get started."/>}</>}
+ {page==="Orders"&&isAdmin&&<><Section title="All laundry orders" sub="Update laundry progress, payment, pickup, and delivery status."/>{store.orders.map(o=><OrderCard key={o.id} o={o} admin onStatus={v=>updateOrder(o.id,{status:v})} onPaid={v=>recordPayment(o.id,v)} paymentValue={paymentInput[o.id]??""} setPaymentValue={v=>setPaymentInput(p=>({...p,[o.id]:v}))}/>)}</>}
  {page==="Place Order"&&!isAdmin&&<><Section title="Place a laundry order" sub="Choose a service and submit your laundry details."/><View style={s.card}><Text style={s.label}>LAUNDRY SERVICE</Text>{services.map(x=><TouchableOpacity key={x.name} onPress={()=>setService(x.name)} style={[s.choice,service===x.name&&s.choiceOn]}><Text style={s.body}>{x.name}</Text><Text style={s.price}>{money(x.rate)} / kg {service===x.name?"✓":""}</Text></TouchableOpacity>)}<Text style={s.label}>WEIGHT (KG)</Text><Input value={weight} onChangeText={setWeight} placeholder="Enter weight" keyboardType="decimal-pad"/><Text style={s.label}>FULFILLMENT METHOD</Text><View style={s.row}><Btn label="Pickup" kind={fulfillment==="Pickup"?"primary":"soft"} onPress={()=>setFulfillment("Pickup")}/><Btn label="Delivery" kind={fulfillment==="Delivery"?"primary":"soft"} onPress={()=>setFulfillment("Delivery")}/></View><View style={s.total}><Text style={s.muted}>Estimated total</Text><Text style={s.totalAmount}>{money((services.find(x=>x.name===service)?.rate||50)*(Number(weight)||0))}</Text></View><Btn label="Submit laundry order" onPress={createOrder}/></View></>}
  {page==="My Laundry"&&!isAdmin&&<><Section title="My laundry tracking" sub="Only your own laundry orders are displayed."/>{myOrders.map(o=><OrderCard key={o.id} o={o}/>) }{myOrders.length===0&&<Empty text="No orders found. Use Place Order to create one."/>}</>}
  {page==="My Profile"&&!isAdmin&&<><Section title="My account"/><View style={s.card}><Info label="Customer name" value={account.name}/><Info label="Username" value={account.username}/><Info label="Customer ID" value={account.id}/><Tag text="CUSTOMER ACCOUNT"/></View></>}
@@ -419,10 +393,69 @@ const setupAdmin = () => {
 function Stat({label,value}:{label:string;value:string}){return <View style={s.stat}><Text style={s.statValue}>{value}</Text><Text style={s.statLabel}>{label}</Text></View>}
 function Info({label,value}:{label:string;value:string}){return <View style={s.info}><Text style={s.muted}>{label}</Text><Text style={s.itemTitle}>{value}</Text></View>}
 function Empty({text}:{text:string}){return <View style={s.card}><Text style={s.muted}>{text}</Text></View>}
-function OrderCard({o,admin=false,onStatus,onPayment,onPaid,paymentValue,setPaymentValue}:{o:Order;admin?:boolean;onStatus?:(v:OrderStatus)=>void;onPayment?:(v:PaymentStatus)=>void;onPaid?:(v:string)=>void;paymentValue?:string;setPaymentValue?:(v:string)=>void}){
- return <View style={s.card}><View style={s.rowBetween}><View><Text style={s.orderId}>{o.id}</Text><Text style={s.itemTitle}>{o.customerName}</Text></View><Tag text={o.payment} color={o.payment==="Paid"?C.green:o.payment==="Unpaid"?C.red:C.amber}/></View><Text style={s.body}>{o.service} · {o.weight} kg · {o.fulfillment}</Text><Text style={s.body}>Total: <Text style={s.price}>{money(o.amount)}</Text>  Paid: {money(o.paid)}  Balance: {money(o.amount-o.paid)}</Text><View style={s.rowBetween}><Tag text={o.status} color={o.status==="Delivered"||o.status==="Picked Up"?C.green:C.amber}/><Text style={s.muted}>{o.createdAt}</Text></View>{admin&&<><Text style={s.label}>UPDATE LAUNDRY / PICKUP / DELIVERY STATUS</Text><View style={s.statusWrap}>{orderStatuses.map(v=><TouchableOpacity key={v} onPress={()=>onStatus?.(v)} style={[s.statusBtn,o.status===v&&s.statusSelected]}><Text style={[s.statusText,o.status===v&&{color:C.white}]}>{v}</Text></TouchableOpacity>)}</View><Text style={s.label}>PAYMENT STATUS</Text><View style={s.row}>{paymentStatuses.map(v=><Btn key={v} label={v} kind={o.payment===v?"primary":"soft"} onPress={()=>onPayment?.(v)}/>)}</View><Text style={s.label}>RECORD AMOUNT PAID</Text><View style={s.row}><View style={{flex:1}}><TextInput value={paymentValue} onChangeText={setPaymentValue} keyboardType="decimal-pad" style={s.input} placeholder="Amount paid"/></View><Btn label="Save payment" onPress={()=>onPaid?.(paymentValue||"0")}/></View></>}</View>
+function OrderCard({o,admin=false,onStatus,onPaid,paymentValue,setPaymentValue}:{o:Order;admin?:boolean;onStatus?:(v:OrderStatus)=>void;onPaid?:(v:string)=>void;paymentValue?:string;setPaymentValue?:(v:string)=>void}){
+ const paid=Math.max(0,Math.min(o.amount,o.paid));
+ const balance=Math.max(0,o.amount-paid);
+ const fullyPaid=balance<=0;
+ const paymentState:PaymentStatus=fullyPaid?"Paid":paid>0?"Partially Paid":"Unpaid";
+ return <View style={s.card}>
+   <View style={s.rowBetween}>
+     <View><Text style={s.orderId}>{o.id}</Text><Text style={s.itemTitle}>{o.customerName}</Text></View>
+     <Tag text={paymentState} color={fullyPaid?C.green:paid>0?C.amber:C.red}/>
+   </View>
+   <Text style={s.body}>{o.service} · {o.weight} kg · {o.fulfillment}</Text>
+   <View style={s.paymentBreakdown}>
+     <View style={s.paymentLine}><Text style={s.muted}>Total laundry price</Text><Text style={s.price}>{money(o.amount)}</Text></View>
+     <View style={s.paymentLine}><Text style={s.muted}>Total amount paid</Text><Text style={s.paymentPaid}>{money(paid)}</Text></View>
+     <View style={s.paymentLine}><Text style={s.muted}>Remaining balance</Text><Text style={[s.paymentBalance,{color:balance>0?C.red:C.green}]}>{money(balance)}</Text></View>
+   </View>
+   <View style={s.rowBetween}><Tag text={o.status} color={o.status==="Delivered"||o.status==="Picked Up"?C.green:C.amber}/><Text style={s.muted}>{o.fulfillment==="Pickup"?(o.status==="Picked Up"?"Picked up":o.status==="Ready for Pickup"?"Ready for pickup":"Pickup"):o.status==="Delivered"?"Delivered":o.status==="For Delivery"?"Out for delivery":"Delivery"} · {o.createdAt}</Text></View>
+   {admin&&<>
+     <Text style={s.label}>UPDATE LAUNDRY / PICKUP / DELIVERY STATUS</Text>
+     <View style={s.statusWrap}>{orderStatusesFor(o.fulfillment).map(v=>{
+       const terminal=["Picked Up","Delivered"].includes(o.status);
+       const selected=o.status===v;
+       const requiresFullPayment=v==="Delivered" && !fullyPaid;
+       const disabled=terminal||selected||requiresFullPayment;
+       return <TouchableOpacity key={v} disabled={disabled} onPress={()=>onStatus?.(v)} style={[s.statusBtn,selected&&s.statusSelected,disabled&&{opacity:0.4}]}><Text style={[s.statusText,selected&&{color:C.white}]}>{v}</Text></TouchableOpacity>;
+     })}</View>
+     {o.fulfillment==="Delivery" && !fullyPaid && o.status!=="Delivered" && <View style={s.lockedPayment}><Ionicons name="lock-closed" size={13} color={C.amber}/><Text style={{color:C.amber,fontSize:10,fontWeight:"800"}}>Delivery is locked until fully paid. Balance: {money(balance)}</Text></View>}
+     {["Picked Up","Delivered"].includes(o.status)&&<View style={s.paymentLocked}><Ionicons name="lock-closed" size={13} color={C.green}/><Text style={{color:C.green,fontSize:10,fontWeight:"800"}}>{o.status==="Picked Up"?"Laundry picked up — status locked.":"Laundry delivered — status locked."}</Text></View>}
+     <Text style={s.label}>PAYMENT STATUS</Text>
+     <View style={s.paymentStatusRow}>
+       <Tag text={paymentState} color={fullyPaid?C.green:paid>0?C.amber:C.red}/>
+       {fullyPaid&&<Text style={s.fullyPaidNote}>This customer is totally paid.</Text>}
+     </View>
+     {fullyPaid?
+       <View style={s.lockedPayment}><Ionicons name="lock-closed" size={15} color={C.green}/><Text style={s.lockedPaymentText}>Payment completed · Editing disabled</Text></View>
+       :
+       <>
+         <Text style={s.label}>AMOUNT RECEIVED NOW</Text>
+         <View style={s.row}>
+           <View style={{flex:1}}>
+             <TextInput value={paymentValue??""} onChangeText={setPaymentValue} keyboardType="decimal-pad" style={s.input} placeholder={`Enter amount (balance ${money(balance)})`}/>
+           </View>
+           <TouchableOpacity style={s.savePaymentButton} onPress={()=>onPaid?.(paymentValue||"")}><Text style={s.savePaymentText}>Save Payment</Text></TouchableOpacity>
+         </View>
+         <Text style={s.paymentHint}>Partial payments are accepted. The balance updates automatically. Maximum payment: {money(balance)}.</Text>
+       </>
+     }
+   </>}
+ </View>
 }
 const s=StyleSheet.create({
  safe:{flex:1,backgroundColor:C.bg},center:{flex:1,alignItems:"center",justifyContent:"center",backgroundColor:C.bg},login:{flex:1,backgroundColor:C.forest,paddingHorizontal:16,paddingTop:8,paddingBottom:8},
-loginScroll:{flexGrow:1,justifyContent:"center",alignItems:"center",paddingVertical:12},textLink:{alignItems:"center",paddingTop:12,paddingBottom:2},textLinkText:{fontSize:10,color:C.muted,textAlign:"center"},loginHero:{alignItems:"center",marginBottom:12},logo:{width:62,height:62,borderRadius:20,backgroundColor:C.mint,alignItems:"center",justifyContent:"center",marginBottom:12},brand:{fontSize:32,fontWeight:"900",color:C.white,letterSpacing:-1},brandSmall:{fontSize:23,fontWeight:"900",color:C.white},brandSub:{fontSize:9,letterSpacing:2,color:C.mint,marginTop:3},heroTitle:{fontSize:21,fontWeight:"800",color:C.white,textAlign:"center",marginTop:10,maxWidth:300},loginCard:{backgroundColor:C.white,borderRadius:18,padding:16,width:"100%",alignSelf:"center"},footer:{color:"#BDEBD8",fontSize:9,textAlign:"center",letterSpacing:2,marginTop:12},sectionTitle:{fontSize:18,fontWeight:"900",color:C.ink},muted:{fontSize:12,color:C.muted,marginTop:4},input:{borderWidth:1,borderColor:C.line,backgroundColor:"#FBFDFC",borderRadius:11,paddingHorizontal:13,paddingVertical:12,fontSize:14,color:C.ink,marginTop:10,marginBottom:3},btn:{backgroundColor:C.forest,borderRadius:10,paddingHorizontal:13,paddingVertical:12,alignItems:"center",justifyContent:"center",marginTop:9,flex:1},btnSoft:{backgroundColor:C.mint2,borderWidth:1,borderColor:C.mint},btnDanger:{backgroundColor:C.red},btnText:{color:C.white,fontSize:12,fontWeight:"800"},top:{backgroundColor:C.forest,paddingHorizontal:18,paddingVertical:14,flexDirection:"row",justifyContent:"space-between",alignItems:"center"},logout:{flexDirection:"row",alignItems:"center",padding:8},nav:{flexDirection:"row",flexWrap:"wrap",backgroundColor:C.forest2,paddingHorizontal:8,paddingVertical:7},navItem:{paddingHorizontal:11,paddingVertical:9,borderRadius:9,margin:2},navActive:{backgroundColor:C.mint},navText:{color:"#C8DED3",fontSize:11,fontWeight:"700"},navTextActive:{color:C.forest},content:{padding:16,paddingBottom:40},banner:{backgroundColor:C.forest,borderRadius:18,padding:20},bannerKicker:{color:C.mint,fontSize:9,letterSpacing:2,fontWeight:"800"},bannerTitle:{color:C.white,fontSize:22,fontWeight:"900",marginTop:9},bannerSub:{color:"#D5E8DF",fontSize:12,marginTop:5},stats:{flexDirection:"row",flexWrap:"wrap",gap:9,marginTop:12},stat:{backgroundColor:C.white,borderRadius:13,padding:13,flexGrow:1,minWidth:"28%",borderWidth:1,borderColor:C.line},statValue:{fontSize:17,fontWeight:"900",color:C.forest},statLabel:{fontSize:10,color:C.muted,marginTop:4},card:{backgroundColor:C.white,borderRadius:15,borderWidth:1,borderColor:C.line,padding:15,marginBottom:11},row:{flexDirection:"row",gap:8,alignItems:"center"},rowBetween:{flexDirection:"row",justifyContent:"space-between",alignItems:"center"},label:{fontSize:9,fontWeight:"900",letterSpacing:1,color:C.muted,marginTop:14,marginBottom:2},body:{fontSize:12,color:C.ink,marginTop:8},price:{fontSize:13,fontWeight:"900",color:C.forest},total:{backgroundColor:C.mint2,padding:14,borderRadius:12,marginTop:15,marginBottom:5},totalAmount:{fontSize:23,fontWeight:"900",color:C.forest,marginTop:3},choice:{borderWidth:1,borderColor:C.line,borderRadius:10,padding:12,marginTop:7,flexDirection:"row",justifyContent:"space-between"},choiceOn:{borderColor:C.green,backgroundColor:C.mint2},listRow:{backgroundColor:C.white,borderRadius:12,padding:12,marginBottom:8,flexDirection:"row",alignItems:"center",gap:8,borderWidth:1,borderColor:C.line},itemTitle:{fontSize:13,fontWeight:"800",color:C.ink,marginTop:3},tag:{paddingHorizontal:9,paddingVertical:5,borderRadius:20},orderId:{fontSize:10,color:C.green,fontWeight:"900",letterSpacing:1},info:{paddingVertical:10,borderBottomWidth:1,borderBottomColor:C.line},statusWrap:{flexDirection:"row",flexWrap:"wrap",gap:6,marginTop:7},statusBtn:{borderWidth:1,borderColor:C.line,borderRadius:20,paddingHorizontal:9,paddingVertical:7},statusSelected:{backgroundColor:C.forest,borderColor:C.forest},statusText:{fontSize:10,color:C.ink,fontWeight:"700"}
+loginScroll:{flexGrow:1,justifyContent:"center",alignItems:"center",paddingVertical:12},textLink:{alignItems:"center",paddingTop:12,paddingBottom:2},textLinkText:{fontSize:10,color:C.muted,textAlign:"center"},loginHero:{alignItems:"center",marginBottom:12},logo:{width:62,height:62,borderRadius:20,backgroundColor:C.mint,alignItems:"center",justifyContent:"center",marginBottom:12},brand:{fontSize:32,fontWeight:"900",color:C.white,letterSpacing:-1},brandSmall:{fontSize:23,fontWeight:"900",color:C.white},brandSub:{fontSize:9,letterSpacing:2,color:C.mint,marginTop:3},heroTitle:{fontSize:21,fontWeight:"800",color:C.white,textAlign:"center",marginTop:10,maxWidth:300},loginCard:{backgroundColor:C.white,borderRadius:18,padding:16,width:"100%",alignSelf:"center"},footer:{color:"#BDEBD8",fontSize:9,textAlign:"center",letterSpacing:2,marginTop:12},sectionTitle:{fontSize:18,fontWeight:"900",color:C.ink},muted:{fontSize:12,color:C.muted,marginTop:4},input:{borderWidth:1,borderColor:C.line,backgroundColor:"#FBFDFC",borderRadius:11,paddingHorizontal:13,paddingVertical:12,fontSize:14,color:C.ink,marginTop:10,marginBottom:3},btn:{backgroundColor:C.forest,borderRadius:10,paddingHorizontal:13,paddingVertical:12,alignItems:"center",justifyContent:"center",marginTop:9,flex:1},btnSoft:{backgroundColor:C.mint2,borderWidth:1,borderColor:C.mint},btnDanger:{backgroundColor:C.red},btnText:{color:C.white,fontSize:12,fontWeight:"800"},top:{backgroundColor:C.forest,paddingHorizontal:18,paddingVertical:14,flexDirection:"row",justifyContent:"space-between",alignItems:"center"},logout:{flexDirection:"row",alignItems:"center",padding:8},nav:{flexDirection:"row",flexWrap:"wrap",backgroundColor:C.forest2,paddingHorizontal:8,paddingVertical:7},navItem:{paddingHorizontal:11,paddingVertical:9,borderRadius:9,margin:2},navActive:{backgroundColor:C.mint},navText:{color:"#C8DED3",fontSize:11,fontWeight:"700"},navTextActive:{color:C.forest},content:{padding:16,paddingBottom:40},banner:{backgroundColor:C.forest,borderRadius:18,padding:20},bannerKicker:{color:C.mint,fontSize:9,letterSpacing:2,fontWeight:"800"},bannerTitle:{color:C.white,fontSize:22,fontWeight:"900",marginTop:9},bannerSub:{color:"#D5E8DF",fontSize:12,marginTop:5},stats:{flexDirection:"row",flexWrap:"wrap",gap:9,marginTop:12},stat:{backgroundColor:C.white,borderRadius:13,padding:13,flexGrow:1,minWidth:"28%",borderWidth:1,borderColor:C.line},statValue:{fontSize:17,fontWeight:"900",color:C.forest},statLabel:{fontSize:10,color:C.muted,marginTop:4},card:{backgroundColor:C.white,borderRadius:15,borderWidth:1,borderColor:C.line,padding:15,marginBottom:11},row:{flexDirection:"row",gap:8,alignItems:"center"},rowBetween:{flexDirection:"row",justifyContent:"space-between",alignItems:"center"},label:{fontSize:9,fontWeight:"900",letterSpacing:1,color:C.muted,marginTop:14,marginBottom:2},body:{fontSize:12,color:C.ink,marginTop:8},price:{fontSize:13,fontWeight:"900",color:C.forest},total:{backgroundColor:C.mint2,padding:14,borderRadius:12,marginTop:15,marginBottom:5},totalAmount:{fontSize:23,fontWeight:"900",color:C.forest,marginTop:3},choice:{borderWidth:1,borderColor:C.line,borderRadius:10,padding:12,marginTop:7,flexDirection:"row",justifyContent:"space-between"},choiceOn:{borderColor:C.green,backgroundColor:C.mint2},listRow:{backgroundColor:C.white,borderRadius:12,padding:12,marginBottom:8,flexDirection:"row",alignItems:"center",gap:8,borderWidth:1,borderColor:C.line},itemTitle:{fontSize:13,fontWeight:"800",color:C.ink,marginTop:3},tag:{paddingHorizontal:9,paddingVertical:5,borderRadius:20},orderId:{fontSize:10,color:C.green,fontWeight:"900",letterSpacing:1},info:{paddingVertical:10,borderBottomWidth:1,borderBottomColor:C.line},statusWrap:{flexDirection:"row",flexWrap:"wrap",gap:6,marginTop:7},statusBtn:{borderWidth:1,borderColor:C.line,borderRadius:20,paddingHorizontal:9,paddingVertical:7},statusSelected:{backgroundColor:C.forest,borderColor:C.forest},statusText:{fontSize:10,color:C.ink,fontWeight:"700"},
+ paymentBreakdown:{backgroundColor:C.bg,borderRadius:10,padding:11,marginTop:10,marginBottom:10},
+ paymentLine:{flexDirection:"row",justifyContent:"space-between",alignItems:"center",paddingVertical:3},
+ paymentPaid:{fontSize:12,fontWeight:"800",color:C.green},
+ paymentBalance:{fontSize:13,fontWeight:"900"},
+ paymentStatusRow:{flexDirection:"row",alignItems:"center",gap:9,marginTop:6},
+ fullyPaidNote:{fontSize:11,fontWeight:"800",color:C.green},
+ lockedPayment:{flexDirection:"row",alignItems:"center",gap:7,backgroundColor:C.mint2,borderRadius:10,padding:12,marginTop:10},
+ lockedPaymentText:{fontSize:11,fontWeight:"800",color:C.green},
+ savePaymentButton:{backgroundColor:C.forest,borderRadius:10,paddingHorizontal:16,justifyContent:"center",alignItems:"center",marginTop:9},
+ savePaymentText:{color:C.white,fontSize:12,fontWeight:"900"},
+ paymentHint:{fontSize:10,color:C.muted,marginTop:6,lineHeight:15}
 });
+//final
