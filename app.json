@@ -1,0 +1,44 @@
+{
+  "expo": {
+    "name": "Laundry Management System",
+    "slug": "laundry-management-system",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "backgroundColor": "#0E3B2E"
+    },
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.example.laundrymanagement",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Allow Laundry Management System to show your location on the collection map."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow the app to select a household photo."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "defaultChannel": "laundry-updates"
+        }
+      ],
+      "expo-status-bar"
+    ]
+  }
+}
