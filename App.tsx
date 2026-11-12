@@ -8,7 +8,7 @@ type OrderStatus = "Received" | "Washing" | "Drying" | "Ironing" | "Completed" |
 type PaymentStatus = "Unpaid" | "Partially Paid" | "Paid";
 type Product = { id:string; name:string; price:number; stock:number; unit:string };
 type Account = { id:string; username:string; password:string; name:string; role:Role };
-type Order = { id:string; customerId:string; customerName:string; service:string; weight:number; amount:number; paid:number; payment:PaymentStatus; status:OrderStatus; fulfillment:"Pickup"|"Delivery"; createdAt:string };
+type Order = { id:string; customerId:string; customerName:string; service:string; weight:number; amount:number; paid:number; payment:PaymentStatus; status:OrderStatus; fulfillment:"Pickup"|"Delivery"; createdAt:string; assignedStaffName?:string };
 type Store = { accounts:Account[]; products:Product[]; orders:Order[]; duty:string[] };
 const KEY = "laundriflow-complete-v3";
 
@@ -70,6 +70,7 @@ const [regPass, setRegPass] = useState("");
  const [service,setService]=useState(services[0].name),[weight,setWeight]=useState("1"),[fulfillment,setFulfillment]=useState<"Pickup"|"Delivery">("Pickup");
  const [productName,setProductName]=useState(""),[productPrice,setProductPrice]=useState(""),[productStock,setProductStock]=useState(""),[productUnit,setProductUnit]=useState("pcs");
  const [staffName,setStaffName]=useState(""),[paymentInput,setPaymentInput]=useState<Record<string,string>>({});
+  const [deliveryOrderId,setDeliveryOrderId]=useState<string|null>(null);
  useEffect(()=>{(async()=>{try{const raw=await AsyncStorage.getItem(KEY);if(raw)setStore(JSON.parse(raw));}catch(e){console.warn(e)}finally{setReady(true)}})()},[]);
  useEffect(()=>{if(ready)AsyncStorage.setItem(KEY,JSON.stringify(store)).catch(console.warn)},[store,ready]);
  const isAdmin=account?.role==="admin";
@@ -175,8 +176,9 @@ const setupAdmin = () => {
    const terminalStatuses:OrderStatus[]=["Picked Up","Delivered"];
    if(terminalStatuses.includes(o.status))return o;
    if(patch.status&&!orderStatusesFor(o.fulfillment).includes(patch.status))return o;
-   // Delivery cannot be marked delivered until the full laundry amount is paid.
-   if(patch.status==="Delivered" && o.paid < o.amount)return o;
+   // A delivery can only be completed when assigned staff exists and the order is fully paid.
+   if(patch.status==="Delivered" && (o.fulfillment!=="Delivery" || !o.assignedStaffName || !(o.amount>0 && o.paid>=o.amount)))return o;
+   if(patch.assignedStaffName && o.fulfillment!=="Delivery")return o;
    return {...o,...patch};
  })}));
  const recordPayment=(orderId:string,amountText:string)=>{
@@ -211,7 +213,16 @@ const setupAdmin = () => {
    }
  };
  const addProduct=()=>{const price=Number(productPrice),stock=Number(productStock);if(!productName.trim()||price<=0||stock<0){Alert.alert("Invalid product","Enter a product name, valid price, and stock quantity.");return}setStore(v=>({...v,products:[...v.products,{id:"P-"+id(),name:productName.trim(),price,stock,unit:productUnit}]}));setProductName("");setProductPrice("");setProductStock("");};
- const addStaff=()=>{if(!staffName.trim())return;setStore(v=>({...v,duty:[...v.duty,staffName.trim()]}));setStaffName("");};
+ const addStaff=()=>{if(!staffName.trim())return;if(store.duty.some(n=>n.toLowerCase()===staffName.trim().toLowerCase())){Alert.alert("Staff already exists","This staff member is already on the duty list.");return;}setStore(v=>({...v,duty:[...v.duty,staffName.trim()]}));setStaffName("");};
+ const activeDeliveryFor=(name:string,excludeOrderId?:string)=>store.orders.some(o=>o.id!==excludeOrderId&&o.fulfillment==="Delivery"&&o.status==="For Delivery"&&o.assignedStaffName===name);
+ const assignDeliveryStaff=(orderId:string,name:string)=>{
+   const order=store.orders.find(o=>o.id===orderId);
+   if(!order||order.fulfillment!=="Delivery"||order.status==="Delivered"){setDeliveryOrderId(null);return;}
+   if(activeDeliveryFor(name,orderId)){Alert.alert("Staff unavailable","This staff member is already assigned to another active delivery.");return;}
+   updateOrder(orderId,{status:"For Delivery",assignedStaffName:name});
+   setDeliveryOrderId(null);
+   Alert.alert("Delivery assigned",`${name} has been assigned to order ${orderId}.`);
+ };
  if(!ready)return <SafeAreaView style={s.center}><Text style={s.muted}>Loading LaundriFlow…</Text></SafeAreaView>;
  if (!account) return (
    <SafeAreaView style={s.login}>
@@ -380,20 +391,42 @@ const setupAdmin = () => {
  <ScrollView contentContainerStyle={s.content}>
  {page==="Dashboard"&&isAdmin&&<><View style={s.banner}><Text style={s.bannerKicker}>ADMIN WORKSPACE</Text><Text style={s.bannerTitle}>Good day, Administrator</Text><Text style={s.bannerSub}>Manage laundry operations from one place.</Text></View><View style={s.stats}><Stat label="Total orders" value={String(store.orders.length)}/><Stat label="In process" value={String(store.orders.filter(o=>!["Completed","Ready for Pickup","Picked Up","Delivered"].includes(o.status)).length)}/><Stat label="Revenue collected" value={money(totalRevenue)}/><Stat label="Customers" value={String(store.accounts.filter(a=>a.role==="customer").length)}/></View></>}
  {page==="Dashboard"&&!isAdmin&&<><View style={s.banner}><Text style={s.bannerKicker}>CUSTOMER PORTAL</Text><Text style={s.bannerTitle}>Hello, {account.name}</Text><Text style={s.bannerSub}>Track your laundry, payments, and pickup or delivery.</Text></View><View style={s.stats}><Stat label="My orders" value={String(myOrders.length)}/><Stat label="In process" value={String(myOrders.filter(o=>!["Completed","Picked Up","Delivered"].includes(o.status)).length)}/><Stat label="Outstanding" value={money(myOrders.reduce((a,o)=>a+(o.amount-o.paid),0))}/></View><Section title="My latest laundry"/>{myOrders.slice(0,4).map(o=><OrderCard key={o.id} o={o}/>) }{myOrders.length===0&&<Empty text="You have no laundry orders yet. Place your first order to get started."/>}</>}
- {page==="Orders"&&isAdmin&&<><Section title="All laundry orders" sub="Update laundry progress, payment, pickup, and delivery status."/>{store.orders.map(o=><OrderCard key={o.id} o={o} admin onStatus={v=>updateOrder(o.id,{status:v})} onPaid={v=>recordPayment(o.id,v)} paymentValue={paymentInput[o.id]??""} setPaymentValue={v=>setPaymentInput(p=>({...p,[o.id]:v}))}/>)}</>}
+ {page==="Orders"&&isAdmin&&<><Section title="All laundry orders" sub="Update laundry progress, payment, pickup, and delivery status."/>{store.orders.map(o=><OrderCard key={o.id} o={o} admin onStatus={v=>updateOrder(o.id,{status:v})} onRequestDelivery={()=>setDeliveryOrderId(o.id)} onPaid={v=>recordPayment(o.id,v)} paymentValue={paymentInput[o.id]??""} setPaymentValue={v=>setPaymentInput(p=>({...p,[o.id]:v}))}/>)}</>}
  {page==="Place Order"&&!isAdmin&&<><Section title="Place a laundry order" sub="Choose a service and submit your laundry details."/><View style={s.card}><Text style={s.label}>LAUNDRY SERVICE</Text>{services.map(x=><TouchableOpacity key={x.name} onPress={()=>setService(x.name)} style={[s.choice,service===x.name&&s.choiceOn]}><Text style={s.body}>{x.name}</Text><Text style={s.price}>{money(x.rate)} / kg {service===x.name?"✓":""}</Text></TouchableOpacity>)}<Text style={s.label}>WEIGHT (KG)</Text><Input value={weight} onChangeText={setWeight} placeholder="Enter weight" keyboardType="decimal-pad"/><Text style={s.label}>FULFILLMENT METHOD</Text><View style={s.row}><Btn label="Pickup" kind={fulfillment==="Pickup"?"primary":"soft"} onPress={()=>setFulfillment("Pickup")}/><Btn label="Delivery" kind={fulfillment==="Delivery"?"primary":"soft"} onPress={()=>setFulfillment("Delivery")}/></View><View style={s.total}><Text style={s.muted}>Estimated total</Text><Text style={s.totalAmount}>{money((services.find(x=>x.name===service)?.rate||50)*(Number(weight)||0))}</Text></View><Btn label="Submit laundry order" onPress={createOrder}/></View></>}
  {page==="My Laundry"&&!isAdmin&&<><Section title="My laundry tracking" sub="Only your own laundry orders are displayed."/>{myOrders.map(o=><OrderCard key={o.id} o={o}/>) }{myOrders.length===0&&<Empty text="No orders found. Use Place Order to create one."/>}</>}
  {page==="My Profile"&&!isAdmin&&<><Section title="My account"/><View style={s.card}><Info label="Customer name" value={account.name}/><Info label="Username" value={account.username}/><Info label="Customer ID" value={account.id}/><Tag text="CUSTOMER ACCOUNT"/></View></>}
  {page==="Products & Prices"&&isAdmin&&<><Section title="Manage products and service rates"/><View style={s.card}><Text style={s.label}>ADD INVENTORY PRODUCT</Text><Input value={productName} onChangeText={setProductName} placeholder="Product name"/><Input value={productPrice} onChangeText={setProductPrice} placeholder="Unit cost / price" keyboardType="decimal-pad"/><Input value={productStock} onChangeText={setProductStock} placeholder="Initial stock quantity" keyboardType="decimal-pad"/><Input value={productUnit} onChangeText={setProductUnit} placeholder="Unit (pcs, liters, kg)"/><Btn label="Add product" onPress={addProduct}/></View><Section title="Laundry service prices"/>{services.map(x=><View key={x.name} style={s.listRow}><View style={{flex:1}}><Text style={s.itemTitle}>{x.name}</Text><Text style={s.muted}>Per kilogram</Text></View><Text style={s.price}>{money(x.rate)}/kg</Text></View>)}</>}
  {page==="Inventory"&&isAdmin&&<><Section title="Inventory overview" sub="Admin-only stock visibility."/><View style={s.stats}><Stat label="Products" value={String(store.products.length)}/><Stat label="Total units" value={String(store.products.reduce((a,p)=>a+p.stock,0))}/></View>{store.products.map(p=><View key={p.id} style={s.listRow}><View style={{flex:1}}><Text style={s.itemTitle}>{p.name}</Text><Text style={s.muted}>{money(p.price)} per {p.unit}</Text></View><Tag text={`${p.stock} ${p.unit}`} color={p.stock<10?C.red:C.green}/><Btn label="+1" kind="soft" onPress={()=>setStore(v=>({...v,products:v.products.map(x=>x.id===p.id?{...x,stock:x.stock+1}:x)}))}/><Btn label="-1" kind="soft" onPress={()=>setStore(v=>({...v,products:v.products.map(x=>x.id===p.id?{...x,stock:Math.max(0,x.stock-1)}:x)}))}/></View>)}</>}
- {page==="Staff Duty"&&isAdmin&&<><Section title="Staff on duty today" sub={new Date().toLocaleDateString()}/><View style={s.card}><Input value={staffName} onChangeText={setStaffName} placeholder="Staff full name"/><Btn label="Add staff on duty" onPress={addStaff}/></View>{store.duty.map((name,i)=><View key={i} style={s.listRow}><View style={{flex:1}}><Text style={s.itemTitle}>{name}</Text><Text style={s.muted}>Assigned for today's duty</Text></View><Tag text="ON DUTY"/><Btn label="Remove" kind="danger" onPress={()=>setStore(v=>({...v,duty:v.duty.filter((_,j)=>j!==i)}))}/></View>)}</>}
+ {page==="Staff Duty"&&isAdmin&&<><Section title="Staff on duty today" sub={new Date().toLocaleDateString()}/><View style={s.card}><Input value={staffName} onChangeText={setStaffName} placeholder="Staff full name"/><Btn label="Add staff on duty" onPress={addStaff}/></View>{store.duty.map((name,i)=>{const busy=activeDeliveryFor(name);return <View key={i} style={s.listRow}><View style={{flex:1}}><Text style={s.itemTitle}>{name}</Text><Text style={s.muted}>Assigned for today's duty</Text></View><Tag text={busy?"ON DELIVERY":"AVAILABLE"} color={busy?C.amber:C.green}/><TouchableOpacity disabled={busy} style={[s.btn,s.btnDanger,busy&&{opacity:0.35}]} onPress={()=>setStore(v=>({...v,duty:v.duty.filter((_,j)=>j!==i)}))}><Text style={s.btnText}>{busy?"Assigned":"Remove"}</Text></TouchableOpacity></View>})}</>}
  {page==="Customers"&&isAdmin&&<><Section title="Registered customers" sub="Customer account directory. Passwords are never displayed."/>{store.accounts.filter(a=>a.role==="customer").map(a=><View key={a.id} style={s.listRow}><View style={{flex:1}}><Text style={s.itemTitle}>{a.name}</Text><Text style={s.muted}>{a.username} · {a.id}</Text></View><Tag text="CUSTOMER"/></View>)}</>}
- </ScrollView></SafeAreaView>;
+ </ScrollView>
+ {deliveryOrderId!==null&&<View style={s.modalBackdrop}>
+   <View style={s.deliveryModal}>
+     <View style={s.rowBetween}>
+       <Text style={s.sectionTitle}>Select delivery staff</Text>
+       <TouchableOpacity onPress={()=>setDeliveryOrderId(null)}><Ionicons name="close" size={24} color={C.ink}/></TouchableOpacity>
+     </View>
+     <Text style={s.muted}>Choose one available staff member to deliver this order.</Text>
+     {store.duty.map((name,i)=>{
+       const busy=activeDeliveryFor(name,deliveryOrderId);
+       return <TouchableOpacity key={`${name}-${i}`} disabled={busy} onPress={()=>assignDeliveryStaff(deliveryOrderId,name)} style={[s.staffOption,busy&&{opacity:0.4}]}>
+         <View style={{flex:1}}>
+           <Text style={s.itemTitle}>{name}</Text>
+           <Text style={s.muted}>{busy?"Currently assigned to another delivery":"Available for delivery"}</Text>
+         </View>
+         <Tag text={busy?"BUSY":"AVAILABLE"} color={busy?C.red:C.green}/>
+       </TouchableOpacity>;
+     })}
+     {store.duty.length===0&&<Empty text="No staff members are listed. Add staff in Staff Duty first."/>}
+     <Btn label="CANCEL" kind="soft" onPress={()=>setDeliveryOrderId(null)}/>
+   </View>
+ </View>}
+ </SafeAreaView>;
 }
 function Stat({label,value}:{label:string;value:string}){return <View style={s.stat}><Text style={s.statValue}>{value}</Text><Text style={s.statLabel}>{label}</Text></View>}
 function Info({label,value}:{label:string;value:string}){return <View style={s.info}><Text style={s.muted}>{label}</Text><Text style={s.itemTitle}>{value}</Text></View>}
 function Empty({text}:{text:string}){return <View style={s.card}><Text style={s.muted}>{text}</Text></View>}
-function OrderCard({o,admin=false,onStatus,onPaid,paymentValue,setPaymentValue}:{o:Order;admin?:boolean;onStatus?:(v:OrderStatus)=>void;onPaid?:(v:string)=>void;paymentValue?:string;setPaymentValue?:(v:string)=>void}){
+function OrderCard({o,admin=false,onStatus,onRequestDelivery,onPaid,paymentValue,setPaymentValue}:{o:Order;admin?:boolean;onStatus?:(v:OrderStatus)=>void;onRequestDelivery?:()=>void;onPaid?:(v:string)=>void;paymentValue?:string;setPaymentValue?:(v:string)=>void}){
  const paid=Math.max(0,Math.min(o.amount,o.paid));
  const balance=Math.max(0,o.amount-paid);
  const fullyPaid=balance<=0;
@@ -417,8 +450,15 @@ function OrderCard({o,admin=false,onStatus,onPaid,paymentValue,setPaymentValue}:
        const selected=o.status===v;
        const requiresFullPayment=v==="Delivered" && !fullyPaid;
        const disabled=terminal||selected||requiresFullPayment;
-       return <TouchableOpacity key={v} disabled={disabled} onPress={()=>onStatus?.(v)} style={[s.statusBtn,selected&&s.statusSelected,disabled&&{opacity:0.4}]}><Text style={[s.statusText,selected&&{color:C.white}]}>{v}</Text></TouchableOpacity>;
+       const handlePress=()=>{if(v==="For Delivery"){onRequestDelivery?.();return;}onStatus?.(v);};
+       return <TouchableOpacity key={v} disabled={disabled} onPress={handlePress} style={[s.statusBtn,selected&&s.statusSelected,disabled&&{opacity:0.4}]}><Text style={[s.statusText,selected&&{color:C.white}]}>{v}</Text></TouchableOpacity>;
      })}</View>
+     {o.fulfillment==="Delivery"&&<View style={s.deliveryAssignmentInfo}>
+       <Ionicons name="bicycle-outline" size={14} color={o.assignedStaffName?C.green:C.amber}/>
+       <Text style={{fontSize:10,fontWeight:"800",color:o.assignedStaffName?C.green:C.amber}}>
+         {o.assignedStaffName?`Delivery staff: ${o.assignedStaffName}`:"No delivery staff assigned. Select For Delivery to assign staff."}
+       </Text>
+     </View>}
      {o.fulfillment==="Delivery" && !fullyPaid && o.status!=="Delivered" && <View style={s.lockedPayment}><Ionicons name="lock-closed" size={13} color={C.amber}/><Text style={{color:C.amber,fontSize:10,fontWeight:"800"}}>Delivery is locked until fully paid. Balance: {money(balance)}</Text></View>}
      {["Picked Up","Delivered"].includes(o.status)&&<View style={s.paymentLocked}><Ionicons name="lock-closed" size={13} color={C.green}/><Text style={{color:C.green,fontSize:10,fontWeight:"800"}}>{o.status==="Picked Up"?"Laundry picked up — status locked.":"Laundry delivered — status locked."}</Text></View>}
      <Text style={s.label}>PAYMENT STATUS</Text>
@@ -456,6 +496,10 @@ loginScroll:{flexGrow:1,justifyContent:"center",alignItems:"center",paddingVerti
  lockedPaymentText:{fontSize:11,fontWeight:"800",color:C.green},
  savePaymentButton:{backgroundColor:C.forest,borderRadius:10,paddingHorizontal:16,justifyContent:"center",alignItems:"center",marginTop:9},
  savePaymentText:{color:C.white,fontSize:12,fontWeight:"900"},
- paymentHint:{fontSize:10,color:C.muted,marginTop:6,lineHeight:15}
+ paymentHint:{fontSize:10,color:C.muted,marginTop:6,lineHeight:15},
+ deliveryAssignmentInfo:{flexDirection:"row",alignItems:"center",gap:7,backgroundColor:C.mint2,borderRadius:9,padding:10,marginTop:9},
+ modalBackdrop:{position:"absolute",top:0,left:0,right:0,bottom:0,backgroundColor:"rgba(0,0,0,0.48)",justifyContent:"center",padding:20,zIndex:20},
+ deliveryModal:{backgroundColor:C.white,borderRadius:18,padding:17,maxHeight:"80%"},
+ staffOption:{flexDirection:"row",alignItems:"center",gap:10,borderWidth:1,borderColor:C.line,borderRadius:12,padding:12,marginTop:9}
 });
 //final
