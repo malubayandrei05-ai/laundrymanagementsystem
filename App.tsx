@@ -226,7 +226,7 @@ const setupAdmin = () => {
  if(!ready)return <SafeAreaView style={s.center}><Text style={s.muted}>Loading LaundriFlow…</Text></SafeAreaView>;
  if (!account) return (
    <SafeAreaView style={s.login}>
-     <StatusBar barStyle="light-content" backgroundColor={C.forest} />
+     <StatusBar barStyle="light-content" />
      <ScrollView
        style={{ flex: 1, width: "100%" }}
        contentContainerStyle={s.loginScroll}
@@ -386,7 +386,7 @@ const setupAdmin = () => {
  const customerPages=["Dashboard","Place Order","My Laundry","My Profile"];
  const pages=isAdmin?adminPages:customerPages;
  const nav=(p:string)=><TouchableOpacity key={p} onPress={()=>setPage(p)} style={[s.navItem,page===p&&s.navActive]}><Text style={[s.navText,page===p&&s.navTextActive]}>{p}</Text></TouchableOpacity>;
- return <SafeAreaView style={s.safe}><StatusBar barStyle="light-content" backgroundColor={C.forest}/><View style={s.top}><View><Text style={s.brandSmall}>Laundri<Text style={{color:C.mint}}>Flow</Text></Text><Text style={s.brandSub}>{isAdmin?"ADMIN MANAGEMENT":"CUSTOMER PORTAL"}</Text></View><TouchableOpacity onPress={logout} style={s.logout}><Ionicons name="log-out-outline" color="#F5C6BD" size={17}/><Text style={{color:"#F5C6BD",fontWeight:"700"}}> Logout</Text></TouchableOpacity></View>
+ return <SafeAreaView style={s.safe}><StatusBar barStyle="light-content"/><View style={s.top}><View><Text style={s.brandSmall}>Laundri<Text style={{color:C.mint}}>Flow</Text></Text><Text style={s.brandSub}>{isAdmin?"ADMIN MANAGEMENT":"CUSTOMER PORTAL"}</Text></View><TouchableOpacity onPress={logout} style={s.logout}><Ionicons name="log-out-outline" color="#F5C6BD" size={17}/><Text style={{color:"#F5C6BD",fontWeight:"700"}}> Logout</Text></TouchableOpacity></View>
  <View style={s.nav}>{pages.map(nav)}</View>
  <ScrollView contentContainerStyle={s.content}>
  {page==="Dashboard"&&isAdmin&&<><View style={s.banner}><Text style={s.bannerKicker}>ADMIN WORKSPACE</Text><Text style={s.bannerTitle}>Good day, Administrator</Text><Text style={s.bannerSub}>Manage laundry operations from one place.</Text></View><View style={s.stats}><Stat label="Total orders" value={String(store.orders.length)}/><Stat label="In process" value={String(store.orders.filter(o=>!["Completed","Ready for Pickup","Picked Up","Delivered"].includes(o.status)).length)}/><Stat label="Revenue collected" value={money(totalRevenue)}/><Stat label="Customers" value={String(store.accounts.filter(a=>a.role==="customer").length)}/></View></>}
@@ -460,7 +460,7 @@ function OrderCard({o,admin=false,onStatus,onRequestDelivery,onPaid,paymentValue
        </Text>
      </View>}
      {o.fulfillment==="Delivery" && !fullyPaid && o.status!=="Delivered" && <View style={s.lockedPayment}><Ionicons name="lock-closed" size={13} color={C.amber}/><Text style={{color:C.amber,fontSize:10,fontWeight:"800"}}>Delivery is locked until fully paid. Balance: {money(balance)}</Text></View>}
-     {["Picked Up","Delivered"].includes(o.status)&&<View style={s.paymentLocked}><Ionicons name="lock-closed" size={13} color={C.green}/><Text style={{color:C.green,fontSize:10,fontWeight:"800"}}>{o.status==="Picked Up"?"Laundry picked up — status locked.":"Laundry delivered — status locked."}</Text></View>}
+     {["Picked Up","Delivered"].includes(o.status)&&<View style={s.lockedPayment}><Ionicons name="lock-closed" size={13} color={C.green}/><Text style={{color:C.green,fontSize:10,fontWeight:"800"}}>{o.status==="Picked Up"?"Laundry picked up — status locked.":"Laundry delivered — status locked."}</Text></View>}
      <Text style={s.label}>PAYMENT STATUS</Text>
      <View style={s.paymentStatusRow}>
        <Tag text={paymentState} color={fullyPaid?C.green:paid>0?C.amber:C.red}/>
