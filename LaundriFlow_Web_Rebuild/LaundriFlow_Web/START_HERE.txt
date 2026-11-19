@@ -1,0 +1,28 @@
+LAUNDRIFLOW WEB REBUILD (FRONTEND + BACKEND)\n
+
+A) XAMPP DATABASE
+- Start Apache and MySQL
+- Open phpMyAdmin
+- Import backend/database/schema.sql
+
+
+B) BACKEND
+- Open VS Code terminal
+- cd backend
+- npm install
+- Copy .env.example as .env
+- npm run dev
+- API: http://localhost:4000
+
+C) FRONTEND (SECOND TERMINAL)
+- cd frontend
+- npm install
+- npm run dev
+- Open the URL Vite prints (normally http://localhost:5173)
+
+D) FIRST ADMIN
+- On login screen choose "Initial admin setup"
+- Create your admin account
+- Afterwards log in with that account
+
+Frontend and Backend are separate folders but connect to the shared MySQL database through the API.
