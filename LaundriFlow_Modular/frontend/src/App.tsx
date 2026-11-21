@@ -1,18 +1,116 @@
-import React,{useEffect,useState}from'react';import axios from'axios';import{Activity,Box,ChartNoAxesCombined,ClipboardList,Droplets,LogOut,Package,Plus,Shirt,Truck,Users,Wallet,UserRound,Home,CheckCircle,LoaderCircle}from'lucide-react';
+import React,{useEffect,useState}from'react';import axios from'axios';import{Activity,ChartNoAxesCombined,ClipboardList,Droplets,LogOut,Package,Plus,Shirt,Truck,Users,Wallet,UserRound,Home,CheckCircle}from'lucide-react';
 const API='http://localhost:4000/api';type User={id:number;full_name:string;username:string;role:'admin'|'customer'|'staff';customer_code?:string};type Order={id:number;order_code:string;customer_name:string;customer_code:string;service:string;weight:number;total:number;amount_paid:number;fulfillment:'Pickup'|'Delivery';delivery_staff_id:number|null;delivery_staff_name?:string;status:string;created_at:string};type Staff={id:number;full_name:string;username:string;staff_type:string};type Product={id:number;name:string;unit:string;quantity:number;price:number};const fmt=(n:number)=>'₱'+Number(n||0).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2});const services=[['Wash, Dry & Fold',50],['Wash & Dry',40],['Wash Only',30],['Dry Cleaning',100]] as const;
 export default function App(){const[token,setToken]=useState(localStorage.getItem('lf-token')||'');const[user,setUser]=useState<User|null>(null);const[mode,setMode]=useState('login');const[form,setForm]=useState({full_name:'',username:'',password:''});const[page,setPage]=useState('Dashboard');const[orders,setOrders]=useState<Order[]>([]);const[staff,setStaff]=useState<Staff[]>([]);const[products,setProducts]=useState<Product[]>([]);const[error,setError]=useState('');const[busy,setBusy]=useState(false);const[orderForm,setOrderForm]=useState<{service:string;weight:string;fulfillment:string;delivery_staff_id:string}>({service:services[0][0],weight:'1',fulfillment:'Pickup',delivery_staff_id:''});const[staffForm,setStaffForm]=useState({full_name:'',username:'',password:'',staff_type:'delivery'});const[productForm,setProductForm]=useState({name:'',unit:'pcs',quantity:'',price:''});const[payOrder,setPayOrder]=useState<Order|null>(null);const[payAmount,setPayAmount]=useState('');const[report,setReport]=useState<any>(null);const http=axios.create({baseURL:API});const call=async(method:string,path:string,data?:any)=>{const r=await http.request({method,url:path,data,headers:token?{Authorization:`Bearer ${token}`}:{}});return r.data};
-useEffect(()=>{if(!token)return;call('get','/me').then((u:User)=>{setUser(u);load(u);}).catch(()=>logout());},[token]);async function load(u:User|null=user){try{const d=await call('get','/dashboard');setOrders(d.orders||[]);setProducts(d.products||[]);setStaff(d.staff||[]);if(u?.role==='admin'){const rr=await call('get','/reports');setReport(rr);}else setReport(null);}catch(e:any){setError(e.response?.data?.message||'Could not load dashboard');}}
-async function authSubmit(e:React.FormEvent){e.preventDefault();setError('');try{setBusy(true);const route=mode==='adminsetup'?'/auth/admin-setup':mode==='register'?'/auth/register':'/auth/login';const r=await call('post',route,form);localStorage.setItem('lf-token',r.token);setUser(r.user);setToken(r.token);setForm({full_name:'',username:'',password:''});setMode('login');}catch(e:any){setError(e.response?.data?.message||'Authentication failed');}finally{setForm({full_name:'',username:'',password:''});setBusy(false);}}
-function logout(){localStorage.removeItem('lf-token');setToken('');setUser(null);setOrders([]);setPage('Dashboard');}
+function logout(){localStorage.removeItem('lf-token');setToken('');setUser(null);setOrders([]);setStaff([]);setProducts([]);setReport(null);setError('');setPage('Dashboard');setMode('login');}
+useEffect(()=>{if(!token)return;call('get','/me').then((u:User)=>{setUser(u);load(u);}).catch(()=>logout());},[token]);async function load(u:User|null=user){const current=u;const tasks:Promise<void>[]=[];tasks.push((async()=>{try{const d=await call('get','/dashboard');setOrders(d.orders||[]);setProducts(d.products||[]);}catch(e:any){setError(e.response?.data?.message||'Could not load dashboard data');}})());if(current?.role==='admin'){tasks.push((async()=>{try{const s=await call('get','/staff');setStaff(Array.isArray(s)?s:[]);}catch(e:any){setStaff([]);setError(e.response?.data?.message||'Could not load staff list');}})());tasks.push((async()=>{try{const rr=await call('get','/reports');setReport(rr);}catch(e:any){setReport(null);}})());}else{setStaff([]);setReport(null);}await Promise.all(tasks);}
+async function authSubmit(e: React.FormEvent) {
+  e.preventDefault();
+  setError("");
+  setBusy(true);
+
+  try {
+    const route =
+      mode === "adminsetup"
+        ? "/auth/admin-setup"
+        : mode === "register"
+        ? "/auth/register"
+        : "/auth/login";
+
+    // Sakto nga data ra ang ipadala sa backend
+    const payload =
+      mode === "login"
+        ? {
+            username: form.username.trim(),
+            password: form.password,
+          }
+        : {
+            full_name: form.full_name.trim(),
+            username: form.username.trim(),
+            password: form.password,
+          };
+
+    // Login request: walay daang token nga maapil
+    const response = await http.post(route, payload);
+    const data = response.data;
+
+    if (!data.token || !data.user) {
+      throw new Error("Invalid login response from server.");
+    }
+
+    // Successful login
+    localStorage.setItem("lf-token", data.token);
+
+    setUser(data.user);
+    setToken(data.token);
+
+    // Clear all fields after successful login/register
+    setForm({
+      full_name: "",
+      username: "",
+      password: "",
+    });
+
+    setMode("login");
+    setError("");
+  } catch (e: any) {
+    // Clear old/stale token if login fails
+    localStorage.removeItem("lf-token");
+    setToken("");
+    setUser(null);
+
+    // Clear inputs after failed attempt
+    setForm({
+      full_name: "",
+      username: "",
+      password: "",
+    });
+
+    setError(
+      e.response?.data?.message ||
+      e.message ||
+      "Authentication failed. Check your username and password."
+    );
+  } finally {
+    setBusy(false);
+  }
+}
 async function createOrder(e:React.FormEvent){e.preventDefault();try{await call('post','/orders',{...orderForm,weight:Number(orderForm.weight),delivery_staff_id:orderForm.fulfillment==='Delivery'?Number(orderForm.delivery_staff_id):null});setPage('Orders');setOrderForm({service:services[0][0],weight:'1',fulfillment:'Pickup',delivery_staff_id:''});await load();}catch(e:any){setError(e.response?.data?.message||'Order creation failed');}}
-async function addStaff(e:React.FormEvent){e.preventDefault();try{await call('post','/staff',staffForm);setStaffForm({full_name:'',username:'',password:'',staff_type:'delivery'});await load();}catch(e:any){setError(e.response?.data?.message||'Staff creation failed');}}
+async function addStaff(e:React.FormEvent){e.preventDefault();try{await call('post','/staff',staffForm);setStaffForm({full_name:'',username:'',password:'',staff_type:'delivery'});try{const refreshed=await call('get','/staff');setStaff(Array.isArray(refreshed)?refreshed:[]);}catch{}await load();}catch(e:any){setError(e.response?.data?.message||'Staff creation failed');}}
 async function addProduct(e:React.FormEvent){e.preventDefault();try{await call('post','/inventory',{...productForm,quantity:Number(productForm.quantity),price:Number(productForm.price)});setProductForm({name:'',unit:'pcs',quantity:'',price:''});await load();}catch(e:any){setError(e.response?.data?.message||'Inventory save failed');}}
 async function recordPayment(e:React.FormEvent){e.preventDefault();if(!payOrder)return;try{await call('post',`/orders/${payOrder.id}/payments`,{amount:Number(payAmount)});setPayOrder(null);setPayAmount('');await load();}catch(e:any){setError(e.response?.data?.message||'Payment failed');}}
 async function updateStatus(o:Order,status:string){try{await call('patch',`/orders/${o.id}/status`,{status});await load();}catch(e:any){setError(e.response?.data?.message||'Status update failed');}}
 const admin=user?.role==='admin',customer=user?.role==='customer',staffUser=user?.role==='staff';const activeOrders=orders.filter(o=>!['Delivered','Picked Up'].includes(o.status)).length;const revenue=orders.reduce((sum,o)=>sum+Number(o.amount_paid||0),0);const outstanding=orders.reduce((sum,o)=>sum+Math.max(0,Number(o.total)-Number(o.amount_paid)),0);
 if(!user)return <div className="auth"><div className="auth-left"><div className="brand"><span className="logo"><Droplets/></span><div><h1>Laundri<span>Flow</span></h1><small>MANAGEMENT SUITE</small></div></div><div className="auth-visual"><div className="bubble"></div><Shirt size={90}/><h2>Fresh clothes.<br/>Smooth workflow.</h2><p>Every load, under control.</p></div></div><div className="auth-right"><div className="auth-box"><div className="mobile-brand"><Droplets/> LaundriFlow</div><span className="eyebrow">WELCOME TO LAUNDRIFLOW</span><h2>{mode==='login'?'Sign in to your account':mode==='register'?'Create customer account':'Initial administrator setup'}</h2><p className="muted">Access your laundry orders and account.</p>{error&&<div className="error">{error}</div>}<form onSubmit={authSubmit} className="stack" autoComplete="off">{mode!=='login'&&<label>Full name<input value={form.full_name} onChange={e=>setForm({...form,full_name:e.target.value})} required placeholder="Your full name"/></label>}<label>Username<input value={form.username} onChange={e=>setForm({...form,username:e.target.value})} required placeholder="Username" autoComplete="off" name="lf-login-username"/></label><label>Password<input type="password" value={form.password} onChange={e=>setForm({...form,password:e.target.value})} required minLength={mode==='adminsetup'?8:6} placeholder="Password" autoComplete="new-password" name="lf-login-password"/></label><button className="btn primary" disabled={busy}>{busy?'Please wait...':mode==='login'?'Sign in':mode==='register'?'Register customer':'Create admin'}</button></form><div className="auth-links">{mode==='login'?<><button onClick={()=>setMode('register')}>Create customer account</button><button onClick={()=>setMode('adminsetup')}>Initial admin setup</button></>:<button onClick={()=>setMode('login')}>Back to login</button>}</div><p className="footnote">Admin setup can only be completed once. Staff accounts are created by the Admin.</p></div></div></div>;
 return <div className="layout"><aside className="sidebar"><div className="brand"><span className="logo"><Droplets/></span><div><h1>Laundri<span>Flow</span></h1><small>MANAGEMENT SUITE</small></div></div><div className="nav-label">WORKSPACE</div><nav>{(admin?[['Dashboard',Home],['Orders',ClipboardList],['Inventory',Package],['Staff',Users],['Reports',ChartNoAxesCombined]]:customer?[['Dashboard',Home],['My Orders',ClipboardList],['New Order',Plus]]:[['Dashboard',Home],['Assigned Deliveries',Truck]]).map(([title,Icon]:any)=><button className={page===title?'active':''} onClick={()=>setPage(title)} key={title}><Icon size={18}/>{title}</button>)}</nav><div className="sidebottom"><div className="helper"><Droplets/><b>Keep every load moving</b><p>Clean operations, clear tracking.</p></div><div className="profile"><span className="avatar">{(user.full_name || user.username || 'U').charAt(0).toUpperCase()}</span><div><b>{user.full_name}</b><small>{user.role==='staff'?'Delivery staff':user.role}</small>{customer&&<small className="code">{user.customer_code}</small>}</div><button className="logout" onClick={logout} title="Logout"><LogOut/></button></div></div></aside><main className="main"><header className="top"><div><span className="breadcrumb">Workspace / </span><strong>{page}</strong></div><span className="connected"><i/> API Connected</span></header><div className="content"><div className="page-heading"><div><span className="eyebrow">{admin?'ADMIN WORKSPACE':customer?'CUSTOMER PORTAL':'STAFF PORTAL'}</span><h2>{page==='Dashboard'?`Hello, ${(user.full_name || user.username || 'User').split(' ')[0]} 👋`:page}</h2><p>{admin?'Manage laundry operations, staff, inventory, orders, and payments.':customer?'Place orders and follow their progress.':'View your assigned delivery orders and update delivery completion.'}</p></div>{customer&&page==='My Orders'&&<button className="btn primary" onClick={()=>setPage('New Order')}><Plus size={16}/> New order</button>}</div>{error&&<div className="error banner">{error}<button onClick={()=>setError('')}>×</button></div>}
-{(page==='Dashboard')&&<><div className="cards"><Stat icon={ClipboardList} title="Orders" value={orders.length}/><Stat icon={Activity} title="Active Orders" value={activeOrders}/><Stat icon={Wallet} title={admin?'Payments Received':'Total Paid'} value={fmt(revenue)}/><Stat icon={Wallet} title="Balance Due" value={fmt(outstanding)}/></div>{admin&&report&&<div className="cards summary"><Stat icon={Users} title="Customers" value={report.summary?.order_count||0}/><Stat icon={Wallet} title="Sales" value={fmt(report.summary?.sales||0)}/><Stat icon={CheckCircle} title="Collected" value={fmt(report.summary?.paid||0)}/><Stat icon={Activity} title="Unpaid balance" value={fmt(report.summary?.balance||0)}/></div>}<Panel title={customer?'My latest orders':admin?'Latest orders':'My assigned deliveries'} subtitle="Recent laundry activity"><OrderTable orders={orders.slice(0,5)} admin={admin} staffUser={staffUser} onStatus={updateStatus} onPay={setPayOrder}/></Panel></>}
+{page === 'Dashboard' && <>
+  <div className="cards">
+    <Stat icon={ClipboardList} title="Orders" value={orders.length} />
+    <Stat icon={Activity} title="Active Orders" value={activeOrders} />
+    <Stat icon={Wallet} title={admin ? 'Payments Received' : 'Total Paid'} value={fmt(revenue)} />
+    <Stat icon={Wallet} title="Balance Due" value={fmt(outstanding)} />
+  </div>
+  {admin && report && <div className="cards summary">
+    <Stat icon={Users} title="Customers" value={report.summary?.customer_count || 0} />
+    <Stat icon={Wallet} title="Sales" value={fmt(report.summary?.sales || 0)} />
+    <Stat icon={CheckCircle} title="Collected" value={fmt(report.summary?.paid || 0)} />
+    <Stat icon={Activity} title="Unpaid balance" value={fmt(report.summary?.balance || 0)} />
+  </div>}
+  {admin && <Panel title="Staff overview" subtitle="Staff accounts currently registered in LaundriFlow">
+    <div className="staff-overview">
+      <div className="staff-count"><strong>{staff.length}</strong><small>Total active staff</small></div>
+      <button className="btn small" onClick={() => setPage('Staff')}>Manage staff</button>
+    </div>
+    {staff.length === 0
+      ? <div className="empty">No staff accounts yet. Create a staff account in Staff management and it will appear here.</div>
+      : <div className="staffgrid">{staff.map(s => <div className="staffcard" key={s.id}>
+          <div className="avatar"><UserRound /></div>
+          <div><b>{s.full_name}</b><small>{s.staff_type === 'delivery' ? 'Delivery / Rider' : 'Laundry Staff'}</small><small>@{s.username}</small></div>
+        </div>)}</div>}
+  </Panel>}
+  <Panel title={customer ? 'My latest orders' : admin ? 'Latest orders' : 'My assigned deliveries'} subtitle="Recent laundry activity">
+    <OrderTable orders={orders.slice(0, 5)} admin={admin} staffUser={staffUser} onStatus={updateStatus} onPay={setPayOrder} />
+  </Panel>
+</>}
 {(page==='Orders'||page==='My Orders'||page==='Assigned Deliveries')&&<Panel title={customer?'My Orders':admin?'Order management':'Assigned delivery orders'} subtitle="Track service, payment, and fulfillment status"><OrderTable orders={orders} admin={admin} staffUser={staffUser} onStatus={updateStatus} onPay={setPayOrder}/></Panel>}
 {page==='New Order'&&customer&&<Panel title="Place a laundry order" subtitle="Choose service, weight, and pickup or delivery"><form onSubmit={createOrder} className="formgrid"><label>Service<select value={orderForm.service} onChange={e=>setOrderForm({...orderForm,service:e.target.value})}>{services.map(([s,r])=><option value={s} key={s}>{s} — {fmt(r)}/kg</option>)}</select></label><label>Weight (kg)<input type="number" min="0.1" step="0.1" value={orderForm.weight} onChange={e=>setOrderForm({...orderForm,weight:e.target.value})} required/></label><label>Fulfillment<select value={orderForm.fulfillment} onChange={e=>setOrderForm({...orderForm,fulfillment:e.target.value,delivery_staff_id:''})}><option>Pickup</option><option>Delivery</option></select></label>{orderForm.fulfillment==='Delivery'&&<label>Choose delivery staff<select value={orderForm.delivery_staff_id} onChange={e=>setOrderForm({...orderForm,delivery_staff_id:e.target.value})} required><option value="">Select staff</option>{staff.filter(s=>s.staff_type==='delivery').map(s=><option key={s.id} value={s.id}>{s.full_name}</option>)}</select></label>}<div className="totalbox"><span>Estimated total</span><b>{fmt((services.find(s=>s[0]===orderForm.service)?.[1]||50)*Number(orderForm.weight||0))}</b></div><button className="btn primary"><Plus size={16}/> Submit order</button></form></Panel>}
 {page==='Staff'&&admin&&<Panel title="Staff management" subtitle="Only accounts created here can access the staff login"><form className="formgrid compact" onSubmit={addStaff}><label>Staff name<input value={staffForm.full_name} onChange={e=>setStaffForm({...staffForm,full_name:e.target.value})} required/></label><label>Username<input value={staffForm.username} onChange={e=>setStaffForm({...staffForm,username:e.target.value})} required/></label><label>Temporary password<input value={staffForm.password} onChange={e=>setStaffForm({...staffForm,password:e.target.value})} minLength={6} required/></label><label>Staff type<select value={staffForm.staff_type} onChange={e=>setStaffForm({...staffForm,staff_type:e.target.value})}><option value="delivery">Delivery / Rider</option><option value="laundry">Laundry Staff</option></select></label><button className="btn primary"><Plus size={15}/> Create staff account</button></form><div className="staffgrid">{staff.map(s=><div className="staffcard" key={s.id}><div className="avatar"><UserRound/></div><div><b>{s.full_name}</b><small>{s.staff_type==='delivery'?'Delivery / Rider':'Laundry Staff'}</small><small>@{s.username}</small></div></div>)}</div></Panel>}

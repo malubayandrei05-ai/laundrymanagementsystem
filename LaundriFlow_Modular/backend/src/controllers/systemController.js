@@ -1,14 +1,403 @@
-import {pool} from '../config/db.js';
-const rates={'Wash, Dry & Fold':50,'Wash & Dry':40,'Wash Only':30,'Dry Cleaning':100};
-export async function dashboard(req,res){try{const isAdmin=req.user.role==='admin';const isStaff=req.user.role==='staff';const [orders]=await pool.query(`SELECT o.*,u.full_name customer_name,u.customer_code,d.full_name delivery_staff_name FROM orders o JOIN users u ON u.id=o.customer_id LEFT JOIN users d ON d.id=o.delivery_staff_id ${isAdmin?'':isStaff?'WHERE o.delivery_staff_id=? AND o.fulfillment=\'Delivery\'':'WHERE o.customer_id=?'} ORDER BY o.created_at DESC`,isAdmin?[]:[req.user.id]);const [products]=await pool.query('SELECT * FROM inventory ORDER BY name');const [staff]=await pool.query("SELECT u.id,u.full_name,s.staff_type,u.username FROM users u JOIN staff_profiles s ON s.user_id=u.id WHERE u.active=1 ORDER BY u.full_name");const [[customerCount]]=await pool.query("SELECT COUNT(*) count FROM users WHERE role='customer'");const [[paidTotal]]=await pool.query('SELECT COALESCE(SUM(amount_paid),0) total FROM orders');res.json({orders,products,staff,customers:customerCount.count,revenue:paidTotal.total,services:Object.entries(rates).map(([name,rate])=>({name,rate}))});}catch(e){console.error(e);res.status(500).json({message:'Dashboard load failed'});}}
-export async function createStaff(req,res){try{const {full_name,username,password,staff_type='delivery'}=req.body;if(!full_name||!username||!password||password.length<6)return res.status(400).json({message:'Name, username, and password (6+ chars) required.'});const hash=await (await import('bcryptjs')).default.hash(password,10);const conn=await pool.getConnection();try{await conn.beginTransaction();const [u]=await conn.query("INSERT INTO users(full_name,username,password_hash,role) VALUES(?,?,?,'staff')",[full_name,username,hash]);await conn.query('INSERT INTO staff_profiles(user_id,staff_type) VALUES(?,?)',[u.insertId,staff_type]);await conn.commit();res.status(201).json({id:u.insertId,full_name,username,staff_type});}catch(e){await conn.rollback();throw e;}finally{conn.release();}}catch(e){res.status(500).json({message:e.code==='ER_DUP_ENTRY'?'Username already exists':'Could not create staff'});}}
-export async function listStaff(req,res){const [s]=await pool.query("SELECT u.id,u.full_name,u.username,s.staff_type FROM users u JOIN staff_profiles s ON s.user_id=u.id WHERE u.active=1 ORDER BY u.full_name");res.json(s);}
-export async function deactivateStaff(req,res){await pool.query('UPDATE users SET active=0 WHERE id=? AND role=\'staff\'',[req.params.id]);res.json({message:'Staff deactivated'});}
-export async function createOrder(req,res){try{const {service,weight,fulfillment,delivery_staff_id}=req.body;const kg=Number(weight);if(!rates[service]||!kg||kg<=0||!['Pickup','Delivery'].includes(fulfillment))return res.status(400).json({message:'Invalid order details'});if(fulfillment==='Delivery'&&!delivery_staff_id)return res.status(400).json({message:'Please choose a delivery staff member'});let staffId=null;if(fulfillment==='Delivery'){const [s]=await pool.query("SELECT u.id FROM users u JOIN staff_profiles sp ON sp.user_id=u.id WHERE u.id=? AND u.active=1 AND sp.staff_type='delivery'",[delivery_staff_id]);if(!s.length)return res.status(400).json({message:'Selected delivery staff is unavailable'});staffId=s[0].id;}const total=Number((rates[service]*kg).toFixed(2));const code=`LF-${Date.now().toString().slice(-7)}`;const [r]=await pool.query('INSERT INTO orders(order_code,customer_id,service,weight,total,fulfillment,delivery_staff_id) VALUES(?,?,?,?,?,?,?)',[code,req.user.id,service,kg,total,fulfillment,staffId]);res.status(201).json({id:r.insertId,order_code:code,total});}catch(e){console.error(e);res.status(500).json({message:'Order creation failed'});}}
-export async function updateOrder(req,res){try{const {status}=req.body;const valid=['Received','Washing','Drying','Ironing','Completed','Ready for Pickup','Picked Up','For Delivery','Delivered'];if(!valid.includes(status))return res.status(400).json({message:'Invalid status'});const [rows]=await pool.query('SELECT * FROM orders WHERE id=?',[req.params.id]);if(!rows.length)return res.status(404).json({message:'Order not found'});if(req.user.role==='staff'){if(rows[0].delivery_staff_id!==req.user.id)return res.status(403).json({message:'You are not assigned to this delivery'});if(status!=='Delivered')return res.status(403).json({message:'Staff can only mark assigned deliveries as Delivered'});if(rows[0].fulfillment!=='Delivery')return res.status(403).json({message:'This is not a delivery order'});}if(req.user.role==='admin'&&status==='Delivered')return res.status(403).json({message:'Only the assigned delivery staff can mark an order as Delivered'});await pool.query('UPDATE orders SET status=? WHERE id=?',[status,req.params.id]);res.json({message:'Order status updated'});}catch{res.status(500).json({message:'Status update failed'});}}
-export async function recordPayment(req,res){try{const amount=Number(req.body.amount);if(!Number.isFinite(amount)||amount<=0)return res.status(400).json({message:'Payment must be greater than zero'});const conn=await pool.getConnection();try{await conn.beginTransaction();const [rows]=await conn.query('SELECT * FROM orders WHERE id=? FOR UPDATE',[req.params.id]);if(!rows.length){await conn.rollback();return res.status(404).json({message:'Order not found'});}const o=rows[0];const remaining=Number(o.total)-Number(o.amount_paid);if(amount>remaining){await conn.rollback();return res.status(400).json({message:`Payment exceeds remaining balance (${remaining.toFixed(2)})`});}await conn.query('UPDATE orders SET amount_paid=amount_paid+? WHERE id=?',[amount,o.id]);await conn.query('INSERT INTO payments(order_id,recorded_by,amount,note) VALUES(?,?,?,?)',[o.id,req.user.id,amount,req.body.note||null]);await conn.commit();res.json({message:'Payment recorded',amount_paid:Number(o.amount_paid)+amount,remaining:remaining-amount});}catch(e){await conn.rollback();throw e;}finally{conn.release();}}catch(e){console.error(e);res.status(500).json({message:'Payment recording failed'});}}
-export async function inventoryList(req,res){const [rows]=await pool.query('SELECT * FROM inventory ORDER BY name');res.json(rows);}
-export async function addInventory(req,res){const {name,unit,quantity,price}=req.body;if(!name||quantity==null||price==null)return res.status(400).json({message:'Complete product details'});const [r]=await pool.query('INSERT INTO inventory(name,unit,quantity,price) VALUES(?,?,?,?)',[name,unit||'pcs',Number(quantity),Number(price)]);res.status(201).json({id:r.insertId,name,unit,quantity,price});}
-export async function updateInventory(req,res){const {quantity,price}=req.body;await pool.query('UPDATE inventory SET quantity=?,price=? WHERE id=?',[quantity,price,req.params.id]);res.json({message:'Inventory updated'});}
-export async function reports(req,res){const [[summary]]=await pool.query("SELECT COUNT(*) order_count,COALESCE(SUM(total),0) sales,COALESCE(SUM(amount_paid),0) paid,COALESCE(SUM(total-amount_paid),0) balance FROM orders");const [[customers]]=await pool.query("SELECT COUNT(*) customer_count FROM users WHERE role='customer'");summary.customer_count=customers.customer_count;const [rows]=await pool.query('SELECT o.order_code,o.created_at,o.service,o.total,o.amount_paid,o.fulfillment,o.status,u.customer_code,u.full_name customer FROM orders o JOIN users u ON u.id=o.customer_id ORDER BY o.created_at DESC');res.json({summary,orders:rows});}
-export async function staffOrders(req,res){const [rows]=await pool.query("SELECT o.*,u.full_name customer_name,u.customer_code FROM orders o JOIN users u ON u.id=o.customer_id WHERE o.delivery_staff_id=? AND o.fulfillment='Delivery' ORDER BY o.created_at DESC",[req.user.id]);res.json(rows);}
+import { pool } from '../config/db.js';
+import bcrypt from 'bcryptjs';
+
+const rates = {
+  'Wash, Dry & Fold': 50,
+  'Wash & Dry': 40,
+  'Wash Only': 30,
+  'Dry Cleaning': 100
+};
+
+// =============================================
+// DASHBOARD
+// =============================================
+export async function dashboard(req, res) {
+  try {
+    const isAdmin = req.user.role === 'admin';
+    const isStaff = req.user.role === 'staff';
+
+    let ordersQuery = `
+      SELECT
+        o.*,
+        u.full_name AS customer_name,
+        u.customer_code,
+        d.full_name AS delivery_staff_name
+      FROM orders o
+      JOIN users u ON u.id = o.customer_id
+      LEFT JOIN users d ON d.id = o.delivery_staff_id
+    `;
+
+    let orderParams = [];
+
+    if (isStaff) {
+      ordersQuery += `
+        WHERE o.delivery_staff_id = ?
+        AND o.fulfillment = 'Delivery'
+      `;
+      orderParams = [req.user.id];
+    } else if (!isAdmin) {
+      ordersQuery += ` WHERE o.customer_id = ? `;
+      orderParams = [req.user.id];
+    }
+
+    ordersQuery += ` ORDER BY o.created_at DESC`;
+
+    const [orders] = await pool.query(ordersQuery, orderParams);
+
+    const [products] = await pool.query(
+      `SELECT * FROM inventory ORDER BY name`
+    );
+
+    const [staff] = await pool.query(`
+      SELECT
+        u.id,
+        u.full_name,
+        u.username,
+        sp.staff_type
+      FROM users u
+      INNER JOIN staff_profiles sp ON sp.user_id = u.id
+      WHERE u.active = 1
+      ORDER BY u.full_name ASC
+    `);
+
+    const [[customerCount]] = await pool.query(`
+      SELECT COUNT(*) AS count
+      FROM users
+      WHERE role = 'customer'
+    `);
+
+    const [[paidTotal]] = await pool.query(`
+      SELECT COALESCE(SUM(amount_paid), 0) AS total
+      FROM orders
+    `);
+
+    const services = Object.entries(rates).map(([name, rate]) => ({
+      name,
+      rate
+    }));
+
+    return res.json({
+      orders,
+      products,
+      staff,
+      staffCount: staff.length,
+      customers: customerCount.count,
+      revenue: paidTotal.total,
+      services
+    });
+
+  } catch (error) {
+    console.error('DASHBOARD ERROR:', error);
+
+    return res.status(500).json({
+      message: 'Dashboard load failed',
+      error: error.message
+    });
+  }
+}
+
+// =============================================
+// CREATE STAFF
+// =============================================
+export async function createStaff(req, res) {
+  let conn;
+
+  try {
+    const full_name = String(
+      req.body.full_name ?? req.body.name ?? ''
+    ).trim();
+
+    const username = String(
+      req.body.username ?? ''
+    ).trim();
+
+    const password = String(
+      req.body.password ?? req.body.temporary_password ?? ''
+    ).trim();
+
+    let staff_type = String(
+      req.body.staff_type ?? req.body.staffType ?? 'laundry'
+    ).trim().toLowerCase();
+
+    // Normalize staff type
+    if (staff_type.includes('delivery')) {
+      staff_type = 'delivery';
+    } else if (
+      staff_type.includes('laundry') ||
+      staff_type.includes('staff')
+    ) {
+      staff_type = 'laundry';
+    }
+
+    if (!full_name || !username || !password) {
+      return res.status(400).json({
+        message: 'Staff name, username, and password are required.'
+      });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({
+        message: 'Password must be at least 6 characters.'
+      });
+    }
+
+    if (!['delivery', 'laundry'].includes(staff_type)) {
+      return res.status(400).json({
+        message: 'Invalid staff type.'
+      });
+    }
+
+    const password_hash = await bcrypt.hash(password, 10);
+
+    conn = await pool.getConnection();
+    await conn.beginTransaction();
+
+    // Check username
+    const [existing] = await conn.query(
+      'SELECT id FROM users WHERE username = ?',
+      [username]
+    );
+
+    if (existing.length > 0) {
+      await conn.rollback();
+
+      return res.status(409).json({
+        message: 'Username already exists.'
+      });
+    }
+
+    // Insert into users table
+    const [userResult] = await conn.query(
+      `INSERT INTO users
+        (full_name, username, password_hash, role, active)
+       VALUES (?, ?, ?, 'staff', 1)`,
+      [full_name, username, password_hash]
+    );
+
+    const staffId = userResult.insertId;
+
+    // Insert staff profile
+    await conn.query(
+      `INSERT INTO staff_profiles
+        (user_id, staff_type)
+       VALUES (?, ?)`,
+      [staffId, staff_type]
+    );
+
+    await conn.commit();
+
+    return res.status(201).json({
+      message: 'Staff account created successfully.',
+      staff: {
+        id: staffId,
+        full_name,
+        username,
+        role: 'staff',
+        staff_type,
+        active: 1
+      }
+    });
+
+  } catch (error) {
+    if (conn) {
+      try {
+        await conn.rollback();
+      } catch {}
+    }
+
+    console.error('CREATE STAFF ERROR:', error);
+
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({
+        message: 'Username already exists.'
+      });
+    }
+
+    return res.status(500).json({
+      message: 'Failed to create staff account.',
+      error: error.message
+    });
+
+  } finally {
+    if (conn) {
+      conn.release();
+    }
+  }
+}
+
+// =============================================
+// LIST STAFF
+// =============================================
+export async function listStaff(req, res) {
+  try {
+    const [staff] = await pool.query(`
+      SELECT
+        u.id,
+        u.full_name,
+        u.username,
+        u.role,
+        u.active,
+        u.created_at,
+        sp.staff_type
+      FROM users u
+      INNER JOIN staff_profiles sp
+        ON sp.user_id = u.id
+      WHERE u.role = 'staff'
+      ORDER BY u.created_at DESC
+    `);
+
+    return res.json(staff);
+
+  } catch (error) {
+    console.error('LIST STAFF ERROR:', error);
+
+    return res.status(500).json({
+      message: 'Failed to load staff list.',
+      error: error.message
+    });
+  }
+}
+
+// =============================================
+// DEACTIVATE STAFF
+// =============================================
+export async function deactivateStaff(req, res) {
+  try {
+    const staffId = Number(req.params.id);
+
+    if (!Number.isInteger(staffId) || staffId <= 0) {
+      return res.status(400).json({
+        message: 'Invalid staff ID.'
+      });
+    }
+
+    if (Number(req.user.id) === staffId) {
+      return res.status(400).json({
+        message: 'You cannot deactivate your own account.'
+      });
+    }
+
+    const [result] = await pool.query(
+      `UPDATE users
+       SET active = 0
+       WHERE id = ?
+       AND role = 'staff'`,
+      [staffId]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        message: 'Staff account not found.'
+      });
+    }
+
+    return res.json({
+      message: 'Staff account deactivated successfully.'
+    });
+
+  } catch (error) {
+    console.error('DEACTIVATE STAFF ERROR:', error);
+
+    return res.status(500).json({
+      message: 'Failed to deactivate staff account.',
+      error: error.message
+    });
+  }
+}
+
+// =============================================
+// CREATE ORDER (TEMPORARY)
+// =============================================
+export async function createOrder(req, res) {
+  return res.status(501).json({
+    message: 'Create order controller is not yet restored.'
+  });
+}
+
+// =============================================
+// UPDATE ORDER (TEMPORARY)
+// =============================================
+export async function updateOrder(req, res) {
+  return res.status(501).json({
+    message: 'Update order controller is not yet restored.'
+  });
+}
+
+// =============================================
+// INVENTORY LIST
+// =============================================
+export async function inventoryList(req, res) {
+  try {
+    const [items] = await pool.query(
+      'SELECT * FROM inventory ORDER BY name'
+    );
+
+    return res.json(items);
+
+  } catch (error) {
+    console.error('INVENTORY ERROR:', error);
+
+    return res.status(500).json({
+      message: 'Failed to load inventory.',
+      error: error.message
+    });
+  }
+}
+
+// =============================================
+// ADD INVENTORY (TEMPORARY)
+// =============================================
+export async function addInventory(req, res) {
+  return res.status(501).json({
+    message: 'Add inventory controller is not yet restored.'
+  });
+}
+
+// =============================================
+// UPDATE INVENTORY (TEMPORARY)
+// =============================================
+export async function updateInventory(req, res) {
+  return res.status(501).json({
+    message: 'Update inventory controller is not yet restored.'
+  });
+}
+
+// =============================================
+// REPORTS (TEMPORARY)
+// =============================================
+export async function reports(req, res) {
+  return res.status(501).json({
+    message: 'Reports controller is not yet restored.'
+  });
+}
+
+// =============================================
+// STAFF ORDERS
+// =============================================
+export async function staffOrders(req, res) {
+  try {
+    const [orders] = await pool.query(`
+      SELECT
+        o.*,
+        u.full_name AS customer_name,
+        u.customer_code,
+        d.full_name AS delivery_staff_name
+      FROM orders o
+      JOIN users u ON u.id = o.customer_id
+      LEFT JOIN users d ON d.id = o.delivery_staff_id
+      WHERE o.delivery_staff_id = ?
+      AND o.fulfillment = 'Delivery'
+      ORDER BY o.created_at DESC
+    `, [req.user.id]);
+
+    return res.json(orders);
+
+  } catch (error) {
+    console.error('STAFF ORDERS ERROR:', error);
+
+    return res.status(500).json({
+      message: 'Failed to load staff orders.',
+      error: error.message
+    });
+  }
+}
