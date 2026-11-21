@@ -1,0 +1,51 @@
+LAUNDRIFLOW - SETUP GUIDE (Windows / XAMPP)
+
+A) DATABASE
+1. Open XAMPP Control Panel and start MySQL.
+2. Browse http://localhost/phpmyadmin
+3. Choose Import, select backend/database/schema.sql, and import.
+
+
+B) BACKEND
+1. Open project folder in VS Code.
+2. Terminal > New Terminal.
+3. Run:
+   cd backend
+   copy .env.example .env
+   npm install
+   npm run dev
+4. Backend listens at http://localhost:4000
+5. Verify http://localhost:4000/api/health
+
+If your MySQL password is set, update backend/.env DB_PASSWORD.
+
+C) FRONTEND
+1. Open a second VS Code terminal.
+2. Run:
+   cd frontend
+   npm install
+   npm run dev
+3. Open the localhost URL Vite prints (normally http://localhost:5173).
+
+D) FIRST ADMIN (ONE TIME ONLY)
+1. On the login screen click Initial admin setup.
+2. Enter name, username, password (8 or more characters).
+3. Setup endpoint refuses to create a second Admin.
+
+E) CUSTOMER
+Customer uses Create customer account. Their customer_code is generated as CUSTOMER-01, CUSTOMER-02, etc. (based on registration order) and is displayed in the profile/order listings.
+
+F) STAFF/RIDER
+Only Admin can create Staff accounts. Admin > Staff creates name, username, password, and type. Staff cannot self-register. Delivery staff login shows only delivery orders assigned to their account. Backend verifies assignment before allowing Delivered status.
+
+G) ORDERS / DELIVERY
+Customer creates an order, selects service, weight, and Pickup or Delivery. Delivery requires selecting an active delivery staff. Pickup does not require a rider.
+
+H) PAYMENT
+Admin only can record payment. Click Record payment and enter an amount. Amount cannot exceed remaining balance. Payment status (Unpaid/Partial/Paid) is calculated using amount_paid versus total. Payments are stored in the payments table.
+
+I) INVENTORY / REPORTS
+Admin can add inventory items and see stock levels. Reports show order count, customer count, gross total, collected amount, and outstanding balance.
+
+IMPORTANT
+This is a local demonstration system with manually recorded payments (no GCash/online gateway). Node package installation/build was not verified in this environment because npm installation timed out. If install/build error appears, send its terminal screenshot so it can be fixed against the actual error.

@@ -1,0 +1,5 @@
+import {Router} from 'express';import {auth,role} from '../middleware/auth.js';import * as A from '../controllers/authController.js';import * as S from '../controllers/systemController.js';
+const r=Router();r.post('/auth/admin-setup',A.setupAdmin);r.post('/auth/register',A.registerCustomer);r.post('/auth/login',A.login);r.get('/me',auth,A.me);r.get('/dashboard',auth,S.dashboard);
+r.post('/staff',auth,role('admin'),S.createStaff);r.get('/staff',auth,S.listStaff);r.patch('/staff/:id/deactivate',auth,role('admin'),S.deactivateStaff);
+r.post('/orders',auth,role('customer'),S.createOrder);r.patch('/orders/:id/status',auth,role('admin','staff'),S.updateOrder);r.post('/orders/:id/payments',auth,role('admin'),S.recordPayment);
+r.get('/inventory',auth,role('admin'),S.inventoryList);r.post('/inventory',auth,role('admin'),S.addInventory);r.patch('/inventory/:id',auth,role('admin'),S.updateInventory);r.get('/reports',auth,role('admin'),S.reports);r.get('/staff/orders',auth,role('staff'),S.staffOrders);export default r;
