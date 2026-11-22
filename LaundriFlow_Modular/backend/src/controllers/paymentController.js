@@ -7,6 +7,9 @@ export async function recordPayment(req, res) {
     const paymentAmount = Number(req.body.amount);
     const orderId = Number(req.params.id);
 
+    // =========================
+    // VALIDATION
+    // =========================
     if (!Number.isFinite(orderId) || orderId <= 0) {
       return res.status(400).json({
         message: 'Invalid order ID'
@@ -15,16 +18,21 @@ export async function recordPayment(req, res) {
 
     if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
       return res.status(400).json({
-        message: 'Invalid payment amount'
+        message: 'Payment amount must be greater than zero'
       });
     }
 
     conn = await pool.getConnection();
     await conn.beginTransaction();
 
-    // Lock order while payment is being processed
+    // =========================
+    // LOCK PURCHASE RECORD
+    // =========================
     const [rows] = await conn.query(
-      'SELECT * FROM orders WHERE id = ? FOR UPDATE',
+      `SELECT *
+       FROM purchase
+       WHERE id = ?
+       FOR UPDATE`,
       [orderId]
     );
 
@@ -38,7 +46,9 @@ export async function recordPayment(req, res) {
 
     const order = rows[0];
 
-    // Customer can only pay for their own order
+    // =========================
+    // CUSTOMER OWNERSHIP
+    // =========================
     if (
       req.user.role === 'customer' &&
       Number(order.customer_id) !== Number(req.user.id)
@@ -50,53 +60,99 @@ export async function recordPayment(req, res) {
       });
     }
 
+    // =========================
+    // PAYMENT CALCULATION
+    // =========================
     const total = Number(order.total);
     const alreadyPaid = Number(order.amount_paid || 0);
-    const balance = total - alreadyPaid;
+    const balance = Number((total - alreadyPaid).toFixed(2));
 
+    // Already fully paid
     if (balance <= 0) {
       await conn.rollback();
 
       return res.status(400).json({
-        message: 'This order is already fully paid'
+        message: 'This order is already fully paid',
+        payment: {
+          total,
+          amount_paid: alreadyPaid,
+          balance: 0,
+          status: 'Paid'
+        }
       });
     }
 
+    // Prevent overpayment
     if (paymentAmount > balance) {
       await conn.rollback();
 
       return res.status(400).json({
-        message: `Payment exceeds remaining balance of ${balance.toFixed(2)}`
+        message: `Payment exceeds remaining balance of ₱${balance.toFixed(2)}`,
+        balance
       });
     }
 
-    const newAmountPaid = alreadyPaid + paymentAmount;
-    const remainingBalance = total - newAmountPaid;
+    // =========================
+    // COMPUTE NEW PAYMENT
+    // =========================
+    const newAmountPaid = Number(
+      (alreadyPaid + paymentAmount).toFixed(2)
+    );
 
-    // Update payment amount
+    const remainingBalance = Number(
+      (total - newAmountPaid).toFixed(2)
+    );
+
+    let paymentStatus = 'Unpaid';
+
+    if (newAmountPaid >= total) {
+      paymentStatus = 'Paid';
+    } else if (newAmountPaid > 0) {
+      paymentStatus = 'Partial';
+    }
+
+    // =========================
+    // UPDATE PURCHASE
+    // =========================
     await conn.query(
-      `UPDATE orders
+      `UPDATE purchase
        SET amount_paid = ?
        WHERE id = ?`,
       [newAmountPaid, orderId]
     );
 
+    // =========================
+    // INSERT PAYMENT HISTORY
+    // =========================
+    await conn.query(
+      `INSERT INTO payments
+        (order_id, recorded_by, amount, note)
+       VALUES (?, ?, ?, ?)`,
+      [
+        orderId,
+        req.user.id,
+        paymentAmount,
+        `Payment recorded. Status: ${paymentStatus}`
+      ]
+    );
+
+    // =========================
+    // COMMIT
+    // =========================
     await conn.commit();
 
     return res.json({
       message: 'Payment successfully recorded',
+
       payment: {
         order_id: orderId,
         payment_amount: paymentAmount,
         total: total,
+        previous_paid: alreadyPaid,
         amount_paid: newAmountPaid,
         balance: remainingBalance,
-        status:
-          remainingBalance <= 0
-            ? 'Paid'
-            : newAmountPaid > 0
-              ? 'Partial'
-              : 'Unpaid'
+        status: paymentStatus,
+        isFullyPaid: remainingBalance <= 0
       }
     });
 

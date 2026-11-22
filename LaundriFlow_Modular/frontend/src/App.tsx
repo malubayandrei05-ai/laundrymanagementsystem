@@ -2,7 +2,51 @@ import React,{useEffect,useState}from'react';import axios from'axios';import{Act
 const API='http://localhost:4000/api';type User={id:number;full_name:string;username:string;role:'admin'|'customer'|'staff';customer_code?:string};type Order={id:number;order_code:string;customer_name:string;customer_code:string;service:string;weight:number;total:number;amount_paid:number;fulfillment:'Pickup'|'Delivery';delivery_staff_id:number|null;delivery_staff_name?:string;status:string;created_at:string};type Staff={id:number;full_name:string;username:string;staff_type:string};type Product={id:number;name:string;unit:string;quantity:number;price:number};const fmt=(n:number)=>'₱'+Number(n||0).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2});const services=[['Wash, Dry & Fold',50],['Wash & Dry',40],['Wash Only',30],['Dry Cleaning',100]] as const;
 export default function App(){const[token,setToken]=useState(localStorage.getItem('lf-token')||'');const[user,setUser]=useState<User|null>(null);const[mode,setMode]=useState('login');const[form,setForm]=useState({full_name:'',username:'',password:''});const[page,setPage]=useState('Dashboard');const[orders,setOrders]=useState<Order[]>([]);const[staff,setStaff]=useState<Staff[]>([]);const[products,setProducts]=useState<Product[]>([]);const[error,setError]=useState('');const[busy,setBusy]=useState(false);const[orderForm,setOrderForm]=useState<{service:string;weight:string;fulfillment:string;delivery_staff_id:string}>({service:services[0][0],weight:'1',fulfillment:'Pickup',delivery_staff_id:''});const[staffForm,setStaffForm]=useState({full_name:'',username:'',password:'',staff_type:'delivery'});const[productForm,setProductForm]=useState({name:'',unit:'pcs',quantity:'',price:''});const[payOrder,setPayOrder]=useState<Order|null>(null);const[payAmount,setPayAmount]=useState('');const[report,setReport]=useState<any>(null);const http=axios.create({baseURL:API});const call=async(method:string,path:string,data?:any)=>{const r=await http.request({method,url:path,data,headers:token?{Authorization:`Bearer ${token}`}:{}});return r.data};
 function logout(){localStorage.removeItem('lf-token');setToken('');setUser(null);setOrders([]);setStaff([]);setProducts([]);setReport(null);setError('');setPage('Dashboard');setMode('login');}
-useEffect(()=>{if(!token)return;call('get','/me').then((u:User)=>{setUser(u);load(u);}).catch(()=>logout());},[token]);async function load(u:User|null=user){const current=u;const tasks:Promise<void>[]=[];tasks.push((async()=>{try{const d=await call('get','/dashboard');setOrders(d.orders||[]);setProducts(d.products||[]);}catch(e:any){setError(e.response?.data?.message||'Could not load dashboard data');}})());if(current?.role==='admin'){tasks.push((async()=>{try{const s=await call('get','/staff');setStaff(Array.isArray(s)?s:[]);}catch(e:any){setStaff([]);setError(e.response?.data?.message||'Could not load staff list');}})());tasks.push((async()=>{try{const rr=await call('get','/reports');setReport(rr);}catch(e:any){setReport(null);}})());}else{setStaff([]);setReport(null);}await Promise.all(tasks);}
+useEffect(()=>{if(!token)return;call('get','/me').then((u:User)=>{setUser(u);load(u);}).catch(()=>logout());},[token]);async function load(u:User|null=user){
+  const current=u;
+  const tasks:Promise<void>[]=[];
+  tasks.push((async()=>{
+    try{
+      const d=await call('get','/dashboard');
+      setOrders(d.orders||[]);
+      setProducts(d.products||[]);
+    }catch(e:any){
+      setError(e.response?.data?.message||'Could not load dashboard data');
+    }
+  })());
+
+  // Admin sees all staff; Customers only need delivery riders for the order form.
+  if(current?.role==='admin'||current?.role==='customer'){
+    tasks.push((async()=>{
+      try{
+        const s=await call('get','/staff');
+        const staffList=Array.isArray(s)?s:[];
+        setStaff(current?.role==='customer'
+          ? staffList.filter((item:Staff)=>String(item.staff_type).toLowerCase()==='delivery')
+          : staffList);
+      }catch(e:any){
+        setStaff([]);
+        setError(e.response?.data?.message||'Could not load staff list');
+      }
+    })());
+  }else{
+    setStaff([]);
+  }
+
+  if(current?.role==='admin'){
+    tasks.push((async()=>{
+      try{
+        const rr=await call('get','/reports');
+        setReport(rr);
+      }catch(e:any){
+        setReport(null);
+      }
+    })());
+  }else{
+    setReport(null);
+  }
+  await Promise.all(tasks);
+}
 async function authSubmit(e: React.FormEvent) {
   e.preventDefault();
   setError("");
@@ -77,7 +121,51 @@ async function authSubmit(e: React.FormEvent) {
 async function createOrder(e:React.FormEvent){e.preventDefault();try{await call('post','/orders',{...orderForm,weight:Number(orderForm.weight),delivery_staff_id:orderForm.fulfillment==='Delivery'?Number(orderForm.delivery_staff_id):null});setPage('Orders');setOrderForm({service:services[0][0],weight:'1',fulfillment:'Pickup',delivery_staff_id:''});await load();}catch(e:any){setError(e.response?.data?.message||'Order creation failed');}}
 async function addStaff(e:React.FormEvent){e.preventDefault();try{await call('post','/staff',staffForm);setStaffForm({full_name:'',username:'',password:'',staff_type:'delivery'});try{const refreshed=await call('get','/staff');setStaff(Array.isArray(refreshed)?refreshed:[]);}catch{}await load();}catch(e:any){setError(e.response?.data?.message||'Staff creation failed');}}
 async function addProduct(e:React.FormEvent){e.preventDefault();try{await call('post','/inventory',{...productForm,quantity:Number(productForm.quantity),price:Number(productForm.price)});setProductForm({name:'',unit:'pcs',quantity:'',price:''});await load();}catch(e:any){setError(e.response?.data?.message||'Inventory save failed');}}
-async function recordPayment(e:React.FormEvent){e.preventDefault();if(!payOrder)return;try{await call('post',`/orders/${payOrder.id}/payments`,{amount:Number(payAmount)});setPayOrder(null);setPayAmount('');await load();}catch(e:any){setError(e.response?.data?.message||'Payment failed');}}
+async function recordPayment(e: React.FormEvent) {
+  e.preventDefault();
+
+  if (!payOrder) return;
+
+  const amount = Number(payAmount);
+  const balance = Number(payOrder.total) - Number(payOrder.amount_paid);
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    setError('Please enter a valid payment amount.');
+    return;
+  }
+
+  if (amount > balance) {
+    setError(`Payment cannot exceed the remaining balance of ${fmt(balance)}.`);
+    return;
+  }
+
+  try {
+    setBusy(true);
+    setError('');
+
+    const result = await call(
+      'post',
+      `/orders/${payOrder.id}/payments`,
+      { amount }
+    );
+
+    setPayOrder(null);
+    setPayAmount('');
+
+    await load();
+
+    if (Number(result.payment?.balance) <= 0) {
+      setError('Payment completed. Order is now fully PAID.');
+    }
+  } catch (e: any) {
+    setError(
+      e.response?.data?.message ||
+      'Payment failed. Please try again.'
+    );
+  } finally {
+    setBusy(false);
+  }
+}
 async function updateStatus(o:Order,status:string){try{await call('patch',`/orders/${o.id}/status`,{status});await load();}catch(e:any){setError(e.response?.data?.message||'Status update failed');}}
 const admin=user?.role==='admin',customer=user?.role==='customer',staffUser=user?.role==='staff';const activeOrders=orders.filter(o=>!['Delivered','Picked Up'].includes(o.status)).length;const revenue=orders.reduce((sum,o)=>sum+Number(o.amount_paid||0),0);const outstanding=orders.reduce((sum,o)=>sum+Math.max(0,Number(o.total)-Number(o.amount_paid)),0);
 if(!user)return <div className="auth"><div className="auth-left"><div className="brand"><span className="logo"><Droplets/></span><div><h1>Laundri<span>Flow</span></h1><small>MANAGEMENT SUITE</small></div></div><div className="auth-visual"><div className="bubble"></div><Shirt size={90}/><h2>Fresh clothes.<br/>Smooth workflow.</h2><p>Every load, under control.</p></div></div><div className="auth-right"><div className="auth-box"><div className="mobile-brand"><Droplets/> LaundriFlow</div><span className="eyebrow">WELCOME TO LAUNDRIFLOW</span><h2>{mode==='login'?'Sign in to your account':mode==='register'?'Create customer account':'Initial administrator setup'}</h2><p className="muted">Access your laundry orders and account.</p>{error&&<div className="error">{error}</div>}<form onSubmit={authSubmit} className="stack" autoComplete="off">{mode!=='login'&&<label>Full name<input value={form.full_name} onChange={e=>setForm({...form,full_name:e.target.value})} required placeholder="Your full name"/></label>}<label>Username<input value={form.username} onChange={e=>setForm({...form,username:e.target.value})} required placeholder="Username" autoComplete="off" name="lf-login-username"/></label><label>Password<input type="password" value={form.password} onChange={e=>setForm({...form,password:e.target.value})} required minLength={mode==='adminsetup'?8:6} placeholder="Password" autoComplete="new-password" name="lf-login-password"/></label><button className="btn primary" disabled={busy}>{busy?'Please wait...':mode==='login'?'Sign in':mode==='register'?'Register customer':'Create admin'}</button></form><div className="auth-links">{mode==='login'?<><button onClick={()=>setMode('register')}>Create customer account</button><button onClick={()=>setMode('adminsetup')}>Initial admin setup</button></>:<button onClick={()=>setMode('login')}>Back to login</button>}</div><p className="footnote">Admin setup can only be completed once. Staff accounts are created by the Admin.</p></div></div></div>;
@@ -108,16 +196,182 @@ return <div className="layout"><aside className="sidebar"><div className="brand"
         </div>)}</div>}
   </Panel>}
   <Panel title={customer ? 'My latest orders' : admin ? 'Latest orders' : 'My assigned deliveries'} subtitle="Recent laundry activity">
-    <OrderTable orders={orders.slice(0, 5)} admin={admin} staffUser={staffUser} onStatus={updateStatus} onPay={setPayOrder} />
+   <OrderTable
+  orders={orders.slice(0, 5)}
+  admin={admin}
+  staffUser={staffUser}
+  staff={staff}
+  onStatus={updateStatus}
+  onPay={setPayOrder}
+/>
   </Panel>
 </>}
-{(page==='Orders'||page==='My Orders'||page==='Assigned Deliveries')&&<Panel title={customer?'My Orders':admin?'Order management':'Assigned delivery orders'} subtitle="Track service, payment, and fulfillment status"><OrderTable orders={orders} admin={admin} staffUser={staffUser} onStatus={updateStatus} onPay={setPayOrder}/></Panel>}
+{(page==='Orders'||page==='My Orders'||page==='Assigned Deliveries')&&<Panel title={customer?'My Orders':admin?'Order management':'Assigned delivery orders'} subtitle="Track service, payment, and fulfillment status"><OrderTable
+  orders={orders}
+  admin={admin}
+  staffUser={staffUser}
+  staff={staff}
+  onStatus={updateStatus}
+  onPay={setPayOrder}
+/>staffUser={staffUser} onStatus={updateStatus} onPay={setPayOrder}/</Panel>}
 {page==='New Order'&&customer&&<Panel title="Place a laundry order" subtitle="Choose service, weight, and pickup or delivery"><form onSubmit={createOrder} className="formgrid"><label>Service<select value={orderForm.service} onChange={e=>setOrderForm({...orderForm,service:e.target.value})}>{services.map(([s,r])=><option value={s} key={s}>{s} — {fmt(r)}/kg</option>)}</select></label><label>Weight (kg)<input type="number" min="0.1" step="0.1" value={orderForm.weight} onChange={e=>setOrderForm({...orderForm,weight:e.target.value})} required/></label><label>Fulfillment<select value={orderForm.fulfillment} onChange={e=>setOrderForm({...orderForm,fulfillment:e.target.value,delivery_staff_id:''})}><option>Pickup</option><option>Delivery</option></select></label>{orderForm.fulfillment==='Delivery'&&<label>Choose delivery staff<select value={orderForm.delivery_staff_id} onChange={e=>setOrderForm({...orderForm,delivery_staff_id:e.target.value})} required><option value="">Select staff</option>{staff.filter(s=>s.staff_type==='delivery').map(s=><option key={s.id} value={s.id}>{s.full_name}</option>)}</select></label>}<div className="totalbox"><span>Estimated total</span><b>{fmt((services.find(s=>s[0]===orderForm.service)?.[1]||50)*Number(orderForm.weight||0))}</b></div><button className="btn primary"><Plus size={16}/> Submit order</button></form></Panel>}
 {page==='Staff'&&admin&&<Panel title="Staff management" subtitle="Only accounts created here can access the staff login"><form className="formgrid compact" onSubmit={addStaff}><label>Staff name<input value={staffForm.full_name} onChange={e=>setStaffForm({...staffForm,full_name:e.target.value})} required/></label><label>Username<input value={staffForm.username} onChange={e=>setStaffForm({...staffForm,username:e.target.value})} required/></label><label>Temporary password<input value={staffForm.password} onChange={e=>setStaffForm({...staffForm,password:e.target.value})} minLength={6} required/></label><label>Staff type<select value={staffForm.staff_type} onChange={e=>setStaffForm({...staffForm,staff_type:e.target.value})}><option value="delivery">Delivery / Rider</option><option value="laundry">Laundry Staff</option></select></label><button className="btn primary"><Plus size={15}/> Create staff account</button></form><div className="staffgrid">{staff.map(s=><div className="staffcard" key={s.id}><div className="avatar"><UserRound/></div><div><b>{s.full_name}</b><small>{s.staff_type==='delivery'?'Delivery / Rider':'Laundry Staff'}</small><small>@{s.username}</small></div></div>)}</div></Panel>}
 {page==='Inventory'&&admin&&<Panel title="Inventory" subtitle="Track supplies and stock"><form className="formgrid compact" onSubmit={addProduct}><label>Product name<input value={productForm.name} onChange={e=>setProductForm({...productForm,name:e.target.value})} required/></label><label>Unit<select value={productForm.unit} onChange={e=>setProductForm({...productForm,unit:e.target.value})}><option>pcs</option><option>kg</option><option>liters</option><option>packs</option></select></label><label>Quantity<input type="number" min="0" value={productForm.quantity} onChange={e=>setProductForm({...productForm,quantity:e.target.value})} required/></label><label>Price<input type="number" min="0" value={productForm.price} onChange={e=>setProductForm({...productForm,price:e.target.value})} required/></label><button className="btn primary"><Plus size={15}/> Add stock item</button></form><table className="table"><thead><tr><th>Item</th><th>Quantity</th><th>Price</th><th>Status</th></tr></thead><tbody>{products.map(p=><tr key={p.id}><td>{p.name}</td><td>{p.quantity} {p.unit}</td><td>{fmt(p.price)}</td><td><span className={`pill ${Number(p.quantity)<=5?'warn':'ok'}`}>{Number(p.quantity)<=5?'Low stock':'In stock'}</span></td></tr>)}</tbody></table></Panel>}
-{page==='Reports'&&admin&&<Panel title="Reports" subtitle="Sales and payment summary"><div className="cards"><Stat icon={ClipboardList} title="Orders" value={report?.summary?.order_count||0}/><Stat icon={Wallet} title="Sales" value={fmt(report?.summary?.sales||0)}/><Stat icon={CheckCircle} title="Payments received" value={fmt(report?.summary?.paid||0)}/><Stat icon={Wallet} title="Balance due" value={fmt(report?.summary?.balance||0)}/></div><OrderTable orders={orders} admin staffUser={false} onStatus={updateStatus} onPay={setPayOrder}/></Panel>}
+{page==='Reports'&&admin&&<Panel title="Reports" subtitle="Sales and payment summary"><div className="cards"><Stat icon={ClipboardList} title="Orders" value={report?.summary?.order_count||0}/><Stat icon={Wallet} title="Sales" value={fmt(report?.summary?.sales||0)}/><Stat icon={CheckCircle} title="Payments received" value={fmt(report?.summary?.paid||0)}/><Stat icon={Wallet} title="Balance due" value={fmt(report?.summary?.balance||0)}/></div><OrderTable orders={orders} admin staffUser={false} staff={staff}onStatus={updateStatus} onPay={setPayOrder}/></Panel>}
 </div></main>{payOrder&&<div className="modalback"><div className="modal"><button className="close" onClick={()=>setPayOrder(null)}>×</button><h3>Record customer payment</h3><p className="muted">Order {payOrder.order_code}</p><div className="paydetails"><div>Total order <b>{fmt(payOrder.total)}</b></div><div>Already paid <b>{fmt(payOrder.amount_paid)}</b></div><div>Balance <b>{fmt(Number(payOrder.total)-Number(payOrder.amount_paid))}</b></div></div><form onSubmit={recordPayment} className="stack"><label>Amount received<input type="number" min="0.01" max={Number(payOrder.total)-Number(payOrder.amount_paid)} step="0.01" value={payAmount} onChange={e=>setPayAmount(e.target.value)} required/></label><button className="btn primary">Confirm payment</button></form></div></div>}</div>;
 }
 function Stat({icon:Icon,title,value}:{icon:any;title:string;value:any}){return <div className="stat"><span className="staticon"><Icon size={19}/></span><div><small>{title}</small><strong>{value}</strong></div></div>}
 function Panel({title,subtitle,children}:{title:string;subtitle:string;children:any}){return <section className="panel"><div className="panelhead"><div><h3>{title}</h3><p>{subtitle}</p></div></div>{children}</section>}
-function OrderTable({orders,admin,staffUser,onStatus,onPay}:{orders:Order[];admin:boolean;staffUser:boolean;onStatus:(o:Order,s:string)=>void;onPay:(o:Order)=>void}){return <div className="tablewrap"><table className="table"><thead><tr><th>Order / Customer</th><th>Service</th><th>Weight</th><th>Fulfillment</th>{admin&&<th>Assigned staff</th>}<th>Total</th><th>Payment</th><th>Status</th>{(admin||staffUser)&&<th>Action</th>}</tr></thead><tbody>{orders.map(o=>{const due=Number(o.total)-Number(o.amount_paid);return <tr key={o.id}><td><b className="ordercode">{o.order_code}</b><small>{o.customer_code||o.customer_name||'Customer'} · {new Date(o.created_at).toLocaleDateString()}</small></td><td>{o.service}</td><td>{o.weight} kg</td><td><span className="pill">{o.fulfillment}</span></td>{admin&&<td>{o.delivery_staff_name||'—'}</td>}<td>{fmt(o.total)}</td><td><span className={`pill ${due<=0?'ok':Number(o.amount_paid)>0?'warn':'neutral'}`}>{due<=0?'Paid':Number(o.amount_paid)>0?'Partial':'Unpaid'}</span><small>{fmt(o.amount_paid)} paid · {fmt(Math.max(0,due))} due</small></td><td><span className="pill">{o.status}</span></td>{(admin||staffUser)&&<td>{admin?<><button className="btn small" disabled={due<=0} onClick={()=>onPay(o)}>Record payment</button><select className="statusselect" value={o.status} onChange={e=>onStatus(o,e.target.value)}><option>Received</option><option>Washing</option><option>Drying</option><option>Ironing</option><option>Completed</option><option>Ready for Pickup</option><option>Picked Up</option><option>For Delivery</option></select></>:staffUser&&o.fulfillment==='Delivery'&&o.delivery_staff_id===undefined?null:staffUser&&o.status!=='Delivered'?<button className="btn small primary" onClick={()=>onStatus(o,'Delivered')}>Mark delivered</button>:staffUser&&o.status==='Delivered'?<span className="pill ok">Delivered</span>:null}</td>}</tr>})}</tbody></table>{orders.length===0&&<div className="empty">No orders yet.</div>}</div>}
+function OrderTable({
+  orders,
+  admin,
+  staffUser,
+  staff,
+  onStatus,
+  onPay
+}: {
+  orders: Order[];
+  admin: boolean;
+  staffUser: boolean;
+  staff: Staff[];
+  onStatus: (o: Order, s: string) => void;
+  onPay: (o: Order) => void;
+}) {
+  return (
+    <div className="tablewrap">
+      <table className="table">
+        <thead>
+          <tr>
+            <th>Order / Customer</th>
+            <th>Service</th>
+            <th>Weight</th>
+            <th>Fulfillment</th>
+            {admin && <th>Assigned staff</th>}
+            <th>Total</th>
+            <th>Payment</th>
+            <th>Status</th>
+            {(admin || staffUser) && <th>Action</th>}
+          </tr>
+        </thead>
+
+        <tbody>
+          {orders.map(o => {
+            const due = Number(o.total) - Number(o.amount_paid);
+
+            // Resolve assigned rider name using the ID if the name is missing
+            const assignedStaffName =
+              o.delivery_staff_name ||
+              staff.find(s => Number(s.id) === Number(o.delivery_staff_id))
+                ?.full_name ||
+              '—';
+
+            return (
+              <tr key={o.id}>
+                <td>
+                  <b className="ordercode">{o.order_code}</b>
+                  <small>
+                    {o.customer_code || o.customer_name || 'Customer'} ·{' '}
+                    {new Date(o.created_at).toLocaleDateString()}
+                  </small>
+                </td>
+
+                <td>{o.service}</td>
+
+                <td>{o.weight} kg</td>
+
+                <td>
+                  <span className="pill">{o.fulfillment}</span>
+                </td>
+
+                {admin && (
+                  <td>
+                    {o.fulfillment === 'Delivery'
+                      ? assignedStaffName
+                      : '—'}
+                  </td>
+                )}
+
+                <td>{fmt(o.total)}</td>
+
+                <td>
+                  <span
+                    className={`pill ${
+                      due <= 0
+                        ? 'ok'
+                        : Number(o.amount_paid) > 0
+                        ? 'warn'
+                        : 'neutral'
+                    }`}
+                  >
+                    {due <= 0
+                      ? 'Paid'
+                      : Number(o.amount_paid) > 0
+                      ? 'Partial'
+                      : 'Unpaid'}
+                  </span>
+
+                  <small>
+                    {fmt(o.amount_paid)} paid · {fmt(Math.max(0, due))} due
+                  </small>
+                </td>
+
+                <td>
+                  <span className="pill">{o.status}</span>
+                </td>
+
+                {(admin || staffUser) && (
+                  <td>
+                    {admin ? (
+                      <>
+                        <button
+                          className="btn small"
+                          disabled={due <= 0}
+                          onClick={() => onPay(o)}
+                        >
+                          Record payment
+                        </button>
+
+                        <select
+                          className="statusselect"
+                          value={o.status}
+                          onChange={e =>
+                            onStatus(o, e.target.value)
+                          }
+                        >
+                          <option>Received</option>
+                          <option>Washing</option>
+                          <option>Drying</option>
+                          <option>Ironing</option>
+                          <option>Completed</option>
+                          <option>Ready for Pickup</option>
+                          <option>Picked Up</option>
+                          <option>For Delivery</option>
+                        </select>
+                      </>
+                    ) : staffUser &&
+                      o.fulfillment === 'Delivery' &&
+                      o.delivery_staff_id === undefined ? null : staffUser &&
+                      o.status !== 'Delivered' ? (
+                      <button
+                        className="btn small primary"
+                        onClick={() => onStatus(o, 'Delivered')}
+                      >
+                        Mark delivered
+                      </button>
+                    ) : staffUser && o.status === 'Delivered' ? (
+                      <span className="pill ok">Delivered</span>
+                    ) : null}
+                  </td>
+                )}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+
+      {orders.length === 0 && (
+        <div className="empty">No orders yet.</div>
+      )}
+    </div>
+  );
+}

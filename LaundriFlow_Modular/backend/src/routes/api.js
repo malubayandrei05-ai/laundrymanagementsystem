@@ -35,12 +35,12 @@ r.post('/orders', auth, role('customer'), S.createOrder);
 r.patch('/orders/:id/status', auth, role('admin', 'staff'), S.updateOrder);
 
 // ==========================
-// CUSTOMER PAYMENT
+// ORDER PAYMENT
 // ==========================
 r.post(
   '/orders/:id/payments',
   auth,
-  role('customer'),
+  role('admin', 'customer'),
   P.recordPayment
 );
 

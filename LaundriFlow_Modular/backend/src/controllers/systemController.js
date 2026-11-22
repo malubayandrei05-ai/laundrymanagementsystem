@@ -16,13 +16,14 @@ export async function dashboard(req, res) {
     const isAdmin = req.user.role === 'admin';
     const isStaff = req.user.role === 'staff';
 
+    // ORDERS: use purchase table
     let ordersQuery = `
       SELECT
         o.*,
         u.full_name AS customer_name,
         u.customer_code,
         d.full_name AS delivery_staff_name
-      FROM orders o
+      FROM purchase o
       JOIN users u ON u.id = o.customer_id
       LEFT JOIN users d ON d.id = o.delivery_staff_id
     `;
@@ -44,10 +45,12 @@ export async function dashboard(req, res) {
 
     const [orders] = await pool.query(ordersQuery, orderParams);
 
+    // INVENTORY
     const [products] = await pool.query(
       `SELECT * FROM inventory ORDER BY name`
     );
 
+    // STAFF
     const [staff] = await pool.query(`
       SELECT
         u.id,
@@ -60,15 +63,17 @@ export async function dashboard(req, res) {
       ORDER BY u.full_name ASC
     `);
 
+    // CUSTOMERS
     const [[customerCount]] = await pool.query(`
       SELECT COUNT(*) AS count
       FROM users
       WHERE role = 'customer'
     `);
 
+    // REVENUE: purchase table
     const [[paidTotal]] = await pool.query(`
       SELECT COALESCE(SUM(amount_paid), 0) AS total
-      FROM orders
+      FROM purchase
     `);
 
     const services = Object.entries(rates).map(([name, rate]) => ({
@@ -119,15 +124,14 @@ export async function createStaff(req, res) {
       req.body.staff_type ?? req.body.staffType ?? 'laundry'
     ).trim().toLowerCase();
 
-    // Normalize staff type
-    if (staff_type.includes('delivery')) {
-      staff_type = 'delivery';
-    } else if (
-      staff_type.includes('laundry') ||
-      staff_type.includes('staff')
-    ) {
-      staff_type = 'laundry';
-    }
+   if (staff_type.includes('delivery')) {
+  staff_type = 'delivery';
+} else if (
+  staff_type.includes('laundry') ||
+  staff_type.includes('staff')
+) {
+  staff_type = 'laundry';
+}
 
     if (!full_name || !username || !password) {
       return res.status(400).json({
@@ -152,7 +156,6 @@ export async function createStaff(req, res) {
     conn = await pool.getConnection();
     await conn.beginTransaction();
 
-    // Check username
     const [existing] = await conn.query(
       'SELECT id FROM users WHERE username = ?',
       [username]
@@ -166,7 +169,6 @@ export async function createStaff(req, res) {
       });
     }
 
-    // Insert into users table
     const [userResult] = await conn.query(
       `INSERT INTO users
         (full_name, username, password_hash, role, active)
@@ -176,7 +178,6 @@ export async function createStaff(req, res) {
 
     const staffId = userResult.insertId;
 
-    // Insert staff profile
     await conn.query(
       `INSERT INTO staff_profiles
         (user_id, staff_type)
@@ -316,6 +317,11 @@ export async function createOrder(req, res) {
     const weight = Number(req.body.weight);
     const fulfillment = String(req.body.fulfillment || '').trim();
 
+    // Rider selected by customer
+    const deliveryStaffId = req.body.delivery_staff_id
+      ? Number(req.body.delivery_staff_id)
+      : null;
+
     // Validate service
     if (!Object.prototype.hasOwnProperty.call(rates, service)) {
       return res.status(400).json({
@@ -337,37 +343,83 @@ export async function createOrder(req, res) {
       });
     }
 
-    // Calculate total using backend rates
+    // =============================================
+    // VALIDATE SELECTED DELIVERY RIDER
+    // =============================================
+    if (fulfillment === 'Delivery') {
+      if (!deliveryStaffId || !Number.isInteger(deliveryStaffId)) {
+        return res.status(400).json({
+          message: 'Please select a delivery rider.'
+        });
+      }
+
+      const [rider] = await pool.query(
+        `SELECT
+            u.id,
+            u.full_name
+         FROM users u
+         INNER JOIN staff_profiles sp
+            ON sp.user_id = u.id
+         WHERE u.id = ?
+           AND u.role = 'staff'
+           AND u.active = 1
+           AND sp.staff_type = 'delivery'
+         LIMIT 1`,
+        [deliveryStaffId]
+      );
+
+      if (rider.length === 0) {
+        return res.status(400).json({
+          message: 'Selected rider is invalid or inactive.'
+        });
+      }
+    }
+
+    // Pickup does not need a rider
+    const assignedRider =
+      fulfillment === 'Delivery'
+        ? deliveryStaffId
+        : null;
+
+    // =============================================
+    // COMPUTE TOTAL
+    // =============================================
     const rate = rates[service];
     const total = Number((rate * weight).toFixed(2));
 
-    // Generate unique order code
     const orderCode =
       `LF-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
-    // Save order to MySQL
+    // =============================================
+    // SAVE ORDER INCLUDING DELIVERY STAFF ID
+    // =============================================
     const [result] = await pool.query(
       `INSERT INTO purchase (
-        order_code,
-        customer_id,
-        service,
-        weight,
-        total,
-        amount_paid,
-        fulfillment,
-        status
-      ) VALUES (?, ?, ?, ?, ?, 0, ?, 'Received')`,
+          order_code,
+          customer_id,
+          service,
+          weight,
+          total,
+          amount_paid,
+          fulfillment,
+          delivery_staff_id,
+          status
+       )
+       VALUES (?, ?, ?, ?, ?, 0, ?, ?, 'Received')`,
       [
         orderCode,
         customerId,
         service,
         weight,
         total,
-        fulfillment
+        fulfillment,
+        assignedRider
       ]
     );
 
-    // Response
+    // =============================================
+    // RESPONSE
+    // =============================================
     return res.status(201).json({
       message: 'Order submitted successfully!',
       order: {
@@ -381,6 +433,7 @@ export async function createOrder(req, res) {
         amount_paid: 0,
         balance: total,
         fulfillment,
+        delivery_staff_id: assignedRider,
         status: 'Received'
       }
     });
@@ -394,25 +447,27 @@ export async function createOrder(req, res) {
     });
   }
 }
-// ===============================
+// =============================================
 // UPDATE ORDER STATUS
-// ===============================
+// =============================================
 export async function updateOrder(req, res) {
   try {
-    const { id } = req.params;
-    const { status } = req.body;
+    const orderId = Number(req.params.id);
+    const status = String(req.body.status || '').trim();
 
     const allowedStatuses = [
       'Received',
-      'Washing',
-      'Drying',
-      'Ironing',
+      'Processing',
+      'Ready',
       'Completed',
-      'Ready for Pickup',
-      'Picked Up',
-      'For Delivery',
-      'Delivered'
+      'Cancelled'
     ];
+
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({
+        message: 'Invalid order ID.'
+      });
+    }
 
     if (!allowedStatuses.includes(status)) {
       return res.status(400).json({
@@ -421,8 +476,10 @@ export async function updateOrder(req, res) {
     }
 
     const [result] = await pool.query(
-      'UPDATE orders SET status = ? WHERE id = ?',
-      [status, id]
+      `UPDATE purchase
+       SET status = ?
+       WHERE id = ?`,
+      [status, orderId]
     );
 
     if (result.affectedRows === 0) {
@@ -433,22 +490,25 @@ export async function updateOrder(req, res) {
 
     return res.json({
       message: 'Order status updated successfully.',
-      orderId: id,
-      status
+      order: {
+        id: orderId,
+        status
+      }
     });
+
   } catch (error) {
-    console.error('Update order error:', error);
+    console.error('UPDATE ORDER STATUS ERROR:', error);
 
     return res.status(500).json({
-      message: 'Failed to update order status.'
+      message: 'Failed to update order status.',
+      error: error.message
     });
   }
 }
 
-
-// ===============================
+// =============================================
 // ADD INVENTORY ITEM
-// ===============================
+// =============================================
 export async function addInventory(req, res) {
   try {
     const { name, unit, quantity, price } = req.body;
@@ -469,19 +529,20 @@ export async function addInventory(req, res) {
       message: 'Inventory item added successfully.',
       id: result.insertId
     });
+
   } catch (error) {
     console.error('Add inventory error:', error);
 
     return res.status(500).json({
-      message: 'Failed to add inventory item.'
+      message: 'Failed to add inventory item.',
+      error: error.message
     });
   }
 }
 
-
-// ===============================
+// =============================================
 // UPDATE INVENTORY
-// ===============================
+// =============================================
 export async function updateInventory(req, res) {
   try {
     const { id } = req.params;
@@ -503,45 +564,52 @@ export async function updateInventory(req, res) {
     return res.json({
       message: 'Inventory updated successfully.'
     });
+
   } catch (error) {
     console.error('Update inventory error:', error);
 
     return res.status(500).json({
-      message: 'Failed to update inventory.'
+      message: 'Failed to update inventory.',
+      error: error.message
     });
   }
 }
-// ===============================
+
+// =============================================
 // STAFF ORDERS
-// ===============================
+// =============================================
 export async function staffOrders(req, res) {
   try {
     const staffId = req.user.id;
 
     const [orders] = await pool.query(
-      `SELECT 
-          o.*,
-          u.full_name AS customer_name,
-          u.customer_code
-       FROM orders o
+      `SELECT
+        o.*,
+        u.full_name AS customer_name,
+        u.customer_code
+       FROM purchase o
        JOIN users u ON o.customer_id = u.id
        WHERE o.delivery_staff_id = ?
+       AND o.fulfillment = 'Delivery'
        ORDER BY o.created_at DESC`,
       [staffId]
     );
 
     return res.json(orders);
+
   } catch (error) {
     console.error('Staff orders error:', error);
 
     return res.status(500).json({
-      message: 'Failed to load staff orders.'
+      message: 'Failed to load staff orders.',
+      error: error.message
     });
   }
 }
-// ===============================
+
+// =============================================
 // INVENTORY LIST
-// ===============================
+// =============================================
 export async function inventoryList(req, res) {
   try {
     const [items] = await pool.query(
@@ -549,19 +617,20 @@ export async function inventoryList(req, res) {
     );
 
     return res.json(items);
+
   } catch (error) {
     console.error('Inventory list error:', error);
 
     return res.status(500).json({
-      message: 'Failed to load inventory.'
+      message: 'Failed to load inventory.',
+      error: error.message
     });
   }
 }
 
-
-// ===============================
+// =============================================
 // REPORTS
-// ===============================
+// =============================================
 export async function reports(req, res) {
   try {
     const [orderStats] = await pool.query(`
@@ -570,18 +639,21 @@ export async function reports(req, res) {
         COALESCE(SUM(total), 0) AS total_sales,
         COALESCE(SUM(amount_paid), 0) AS total_collected,
         COALESCE(SUM(total - amount_paid), 0) AS total_balance
-      FROM orders
+      FROM purchase
     `);
 
     const [statusStats] = await pool.query(`
       SELECT status, COUNT(*) AS count
-      FROM orders
+      FROM purchase
       GROUP BY status
     `);
 
     const [serviceStats] = await pool.query(`
-      SELECT service, COUNT(*) AS count, COALESCE(SUM(total), 0) AS revenue
-      FROM orders
+      SELECT
+        service,
+        COUNT(*) AS count,
+        COALESCE(SUM(total), 0) AS revenue
+      FROM purchase
       GROUP BY service
     `);
 
@@ -590,11 +662,59 @@ export async function reports(req, res) {
       ordersByStatus: statusStats,
       ordersByService: serviceStats
     });
+
   } catch (error) {
     console.error('Reports error:', error);
 
     return res.status(500).json({
-      message: 'Failed to generate reports.'
+      message: 'Failed to generate reports.',
+      error: error.message
     });
   }
 }
+const confirmPayment = async (orderId, amount) => {
+  try {
+    const token =
+      localStorage.getItem('token') ||
+      localStorage.getItem('laundriflow_token') ||
+      localStorage.getItem('authToken');
+
+    const response = await fetch(
+      `http://localhost:4000/api/orders/${orderId}/payments`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          amount: Number(amount),
+        }),
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.message || 'Payment failed');
+    }
+
+    alert(
+      data.payment.balance <= 0
+        ? 'Payment successful! Order is now fully PAID.'
+        : `Payment recorded! Remaining balance: ₱${Number(
+            data.payment.balance
+          ).toFixed(2)}`
+    );
+
+    // Close payment modal
+    setPaymentModal(null);
+
+    // Refresh dashboard/order list
+    await loadDashboard();
+
+  } catch (error) {
+    console.error('CONFIRM PAYMENT ERROR:', error);
+    alert(error.message || 'Failed to confirm payment.');
+  }
+};
