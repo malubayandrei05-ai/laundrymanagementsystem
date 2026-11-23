@@ -734,6 +734,38 @@ export async function staffOrders(req: Request, res: Response) {
 }
 
 // =============================================
+// CREATE INVENTORY ITEM
+// =============================================
+export async function createInventory(req: Request, res: Response) {
+  try {
+    const name = String(req.body?.name ?? '').trim();
+    const unit = String(req.body?.unit ?? 'pcs').trim();
+    const quantity = Number(req.body?.quantity);
+    const price = Number(req.body?.price);
+
+    if (!name) return res.status(400).json({ message: 'Product name is required.' });
+    if (!Number.isInteger(quantity) || quantity < 0) {
+      return res.status(400).json({ message: 'Quantity must be a whole number of zero or more.' });
+    }
+    if (!Number.isFinite(price) || price < 0) {
+      return res.status(400).json({ message: 'Price must be zero or greater.' });
+    }
+
+    const [result]: any = await pool.query(
+      'INSERT INTO inventory (name, unit, quantity, price) VALUES (?, ?, ?, ?)',
+      [name, unit || 'pcs', quantity, price]
+    );
+    const [rows]: any = await pool.query('SELECT * FROM inventory WHERE id = ?', [result.insertId]);
+    return res.status(201).json({ message: 'Inventory item created.', item: rows[0] });
+  } catch (error: any) {
+    console.error('CREATE INVENTORY ERROR:', error);
+    if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ message: 'Inventory item already exists.' });
+    return res.status(500).json({ message: 'Failed to create inventory item.', error: error.message });
+  }
+}
+
+
+// =============================================
 // INVENTORY LIST
 // =============================================
 export async function inventoryList(req: Request, res: Response) {
@@ -752,6 +784,201 @@ export async function inventoryList(req: Request, res: Response) {
     });
   }
 }
+
+// =============================================
+// INVENTORY STOCK ACTIONS
+// =============================================
+
+// ADD STOCK (+1 by default)
+export async function addInventoryStock(req: Request, res: Response) {
+  try {
+    const id = Number(req.params.id);
+    const quantity = Number(req.body?.quantity ?? 1);
+
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ message: 'Invalid inventory item ID.' });
+    }
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      return res.status(400).json({ message: 'Quantity must be a positive whole number.' });
+    }
+
+    const [result]: any = await pool.query(
+      'UPDATE inventory SET quantity = quantity + ? WHERE id = ?',
+      [quantity, id]
+    );
+
+    if (result.affectedRows === 0) {
+      const [existing]: any = await pool.query('SELECT id FROM inventory WHERE id = ?', [id]);
+      if (!existing.length) return res.status(404).json({ message: 'Inventory item not found.' });
+    }
+
+    const [rows]: any = await pool.query('SELECT * FROM inventory WHERE id = ?', [id]);
+    return res.json({ message: 'Stock added successfully.', item: rows[0] });
+  } catch (error: any) {
+    console.error('ADD INVENTORY STOCK ERROR:', error);
+    return res.status(500).json({ message: 'Failed to add stock.', error: error.message });
+  }
+}
+
+
+// DEDUCT STOCK (-1 by default); prevents stock from going below zero
+export async function deductInventoryStock(req: Request, res: Response) {
+  try {
+    const id = Number(req.params.id);
+    const quantity = Number(req.body?.quantity ?? 1);
+
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ message: 'Invalid inventory item ID.' });
+    }
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      return res.status(400).json({ message: 'Quantity must be a positive whole number.' });
+    }
+
+    const [result]: any = await pool.query(
+      'UPDATE inventory SET quantity = quantity - ? WHERE id = ? AND quantity >= ?',
+      [quantity, id, quantity]
+    );
+
+    if (result.affectedRows === 0) {
+      const [existing]: any = await pool.query('SELECT quantity FROM inventory WHERE id = ?', [id]);
+      if (!existing.length) return res.status(404).json({ message: 'Inventory item not found.' });
+      return res.status(400).json({
+        message: 'Insufficient stock. Stock cannot go below zero.',
+        available: Number(existing[0].quantity)
+      });
+    }
+
+    const [rows]: any = await pool.query('SELECT * FROM inventory WHERE id = ?', [id]);
+    return res.json({ message: 'Stock deducted successfully.', item: rows[0] });
+  } catch (error: any) {
+    console.error('DEDUCT INVENTORY STOCK ERROR:', error);
+    return res.status(500).json({ message: 'Failed to deduct stock.', error: error.message });
+  }
+}
+
+
+// BUY: reduce stock and write purchase history in one transaction
+export async function buyInventoryItem(req: Request, res: Response) {
+  let conn: any;
+  try {
+    const id = Number(req.params.id);
+    const quantity = Number(req.body?.quantity);
+
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ message: 'Invalid inventory item ID.' });
+    }
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      return res.status(400).json({ message: 'Enter a valid whole-number quantity to buy.' });
+    }
+
+    conn = await pool.getConnection();
+    await conn.beginTransaction();
+
+    const [items]: any = await conn.query(
+      'SELECT id, name, unit, quantity, price FROM inventory WHERE id = ? FOR UPDATE',
+      [id]
+    );
+
+    if (!items.length) {
+      await conn.rollback();
+      return res.status(404).json({ message: 'Inventory item not found.' });
+    }
+
+    const item = items[0];
+    const available = Number(item.quantity);
+    const price = Number(item.price);
+
+    if (available < quantity) {
+      await conn.rollback();
+      return res.status(400).json({
+        message: `Not enough ${item.name} in stock. Available: ${available} ${item.unit}.`,
+        available
+      });
+    }
+
+    const totalAmount = Number((price * quantity).toFixed(2));
+
+    await conn.query(
+      'UPDATE inventory SET quantity = quantity - ? WHERE id = ? AND quantity >= ?',
+      [quantity, id, quantity]
+    );
+
+    await conn.query(
+      `INSERT INTO inventory_purchases
+       (inventory_id, item_name, quantity, unit_price, total_amount)
+       VALUES (?, ?, ?, ?, ?)`,
+      [id, item.name, quantity, price, totalAmount]
+    );
+
+    await conn.commit();
+
+    const [updatedRows]: any = await pool.query('SELECT * FROM inventory WHERE id = ?', [id]);
+    return res.json({
+      message: 'Purchase recorded and stock updated successfully.',
+      item: updatedRows[0],
+      purchase: {
+        inventory_id: id,
+        item_name: item.name,
+        quantity,
+        unit_price: price,
+        total_amount: totalAmount
+      }
+    });
+  } catch (error: any) {
+    if (conn) {
+      try { await conn.rollback(); } catch {}
+    }
+    console.error('BUY INVENTORY ERROR:', error);
+    return res.status(500).json({ message: 'Purchase failed.', error: error.message });
+  } finally {
+    if (conn) conn.release();
+  }
+}
+
+
+// PURCHASE DASHBOARD SUMMARY
+export async function getInventorySummary(req: Request, res: Response) {
+  try {
+    const [rows]: any = await pool.query(`
+      SELECT
+        COUNT(*) AS total_purchases,
+        COALESCE(SUM(quantity), 0) AS total_units,
+        COALESCE(SUM(total_amount), 0) AS total_sales,
+        COUNT(DISTINCT inventory_id) AS items_purchased
+      FROM inventory_purchases
+    `);
+    const summary = rows[0] || {};
+    return res.json({
+      totalPurchases: Number(summary.total_purchases || 0),
+      totalUnits: Number(summary.total_units || 0),
+      totalSales: Number(summary.total_sales || 0),
+      itemsPurchased: Number(summary.items_purchased || 0)
+    });
+  } catch (error: any) {
+    console.error('INVENTORY SUMMARY ERROR:', error);
+    return res.status(500).json({ message: 'Failed to load inventory summary.', error: error.message });
+  }
+}
+
+
+// RECENT PURCHASE HISTORY
+export async function getInventoryPurchaseHistory(req: Request, res: Response) {
+  try {
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? '50'), 10) || 50, 1), 100);
+    const [rows]: any = await pool.query(
+      `SELECT id, inventory_id, item_name, quantity, unit_price, total_amount, purchased_at
+       FROM inventory_purchases
+       ORDER BY purchased_at DESC, id DESC
+       LIMIT ?`,
+      [limit]
+    );
+    return res.json(rows);
+  } catch (error: any) {
+    console.error('INVENTORY PURCHASE HISTORY ERROR:', error);
+    return res.status(500).json({ message: 'Failed to load purchase history.', error: error.message });
+  }
+}
+
 
 // =============================================
 // REPORTS

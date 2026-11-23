@@ -85,6 +85,7 @@ export default function App() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [staff, setStaff] = useState<Staff[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
+  const [buyQuantities, setBuyQuantities] = useState<Record<number, string>>({});
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -117,6 +118,8 @@ export default function App() {
   const [payOrder, setPayOrder] = useState<Order | null>(null);
   const [payAmount, setPayAmount] = useState('');
   const [report, setReport] = useState<any>(null);
+  const [inventorySummary, setInventorySummary] = useState<any>(null);
+  const [inventoryPurchases, setInventoryPurchases] = useState<any[]>([]);
 
   const http = axios.create({ baseURL: API });
 
@@ -141,6 +144,8 @@ export default function App() {
     setStaff([]);
     setProducts([]);
     setReport(null);
+    setInventorySummary(null);
+    setInventoryPurchases([]);
     setError('');
     setPage('Dashboard');
     setMode('login');
@@ -247,6 +252,17 @@ export default function App() {
       );
     } else {
       setReport(null);
+    }
+
+    // Inventory purchase dashboard (admin only).
+    if (current?.role === 'admin') {
+      tasks.push(
+        (async () => { try { setInventorySummary(await call('get', '/inventory/summary')); } catch { setInventorySummary(null); } })(),
+        (async () => { try { const history = await call('get', '/inventory/purchases'); setInventoryPurchases(Array.isArray(history) ? history : []); } catch { setInventoryPurchases([]); } })()
+      );
+    } else {
+      setInventorySummary(null);
+      setInventoryPurchases([]);
     }
 
     await Promise.all(tasks);
@@ -392,6 +408,43 @@ export default function App() {
       await load();
     } catch (e: any) {
       setError(e.response?.data?.message || 'Inventory save failed');
+    }
+  }
+
+  async function adjustStock(product: Product, delta: number) {
+    const current = Number(product.quantity || 0);
+    if (delta < 0 && current <= 0) {
+      setError(`${product.name} is out of stock. Stock cannot go below zero.`);
+      return;
+    }
+    try {
+      const endpoint = delta > 0 ? 'add-stock' : 'deduct-stock';
+      await call('patch', `/inventory/${product.id}/${endpoint}`, { quantity: 1 });
+      setError('');
+      await load();
+    } catch (e: any) {
+      setError(e.response?.data?.message || 'Stock adjustment failed');
+    }
+  }
+
+
+  async function buyStock(product: Product) {
+    const quantity = Number(buyQuantities[product.id] || 0);
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      setError('Enter a valid purchase quantity greater than zero.');
+      return;
+    }
+    if (quantity > Number(product.quantity)) {
+      setError(`Not enough ${product.name} in stock. Available: ${product.quantity} ${product.unit}.`);
+      return;
+    }
+    try {
+      await call('post', `/inventory/${product.id}/buy`, { quantity });
+      setBuyQuantities(prev => ({ ...prev, [product.id]: '' }));
+      setError('');
+      await load();
+    } catch (e: any) {
+      setError(e.response?.data?.message || 'Purchase failed');
     }
   }
 
@@ -1180,32 +1233,79 @@ export default function App() {
                 <thead>
                   <tr>
                     <th>Item</th>
-                    <th>Quantity</th>
+                    <th>Stock</th>
                     <th>Price</th>
                     <th>Status</th>
+                    <th>Stock control</th>
+                    <th>Buy</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {products.map(p => (
-                    <tr key={p.id}>
-                      <td>{p.name}</td>
-                      <td>
-                        {p.quantity} {p.unit}
-                      </td>
-                      <td>{fmt(p.price)}</td>
-                      <td>
-                        <span
-                          className={`pill ${
-                            Number(p.quantity) <= 5 ? 'warn' : 'ok'
-                          }`}
-                        >
-                          {Number(p.quantity) <= 5 ? 'Low stock' : 'In stock'}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
+                  {products.map(p => {
+                    const stock = Number(p.quantity || 0);
+                    const outOfStock = stock <= 0;
+                    return (
+                      <tr key={p.id}>
+                        <td>{p.name}</td>
+                        <td>{stock} {p.unit}</td>
+                        <td>{fmt(p.price)}</td>
+                        <td>
+                          <span className={`pill ${outOfStock ? 'warn' : stock <= 5 ? 'warn' : 'ok'}`}>
+                            {outOfStock ? 'Out of Stock' : stock <= 5 ? 'Low stock' : 'In stock'}
+                          </span>
+                        </td>
+                        <td>
+                          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                            <button className="btn small" disabled={outOfStock} title="Deduct 1 item" onClick={() => adjustStock(p, -1)}>−</button>
+                            <button className="btn small" title="Add 1 item" onClick={() => adjustStock(p, 1)}>+</button>
+                          </div>
+                        </td>
+                        <td>
+                          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                            <input
+                              type="number"
+                              min="1"
+                              max={stock}
+                              value={buyQuantities[p.id] || ''}
+                              disabled={outOfStock}
+                              placeholder="Qty"
+                              style={{ width: 75 }}
+                              onChange={e => setBuyQuantities(prev => ({ ...prev, [p.id]: e.target.value }))}
+                            />
+                            <button className="btn small primary" disabled={outOfStock} onClick={() => buyStock(p)}>Buy</button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
+
+              {/* INVENTORY PURCHASE DASHBOARD */}
+              <div style={{ marginTop: 24 }}>
+                <Panel title="Inventory Purchase Overview" subtitle="Summary of successful inventory purchases">
+                  <div className="cards">
+                    <Stat icon={ClipboardList} title="Total Purchases" value={inventorySummary?.totalPurchases ?? 0} />
+                    <Stat icon={Package} title="Total Units Bought" value={inventorySummary?.totalUnits ?? 0} />
+                    <Stat icon={Wallet} title="Total Purchase Amount" value={fmt(inventorySummary?.totalSales ?? 0)} />
+                    <Stat icon={Activity} title="Items Purchased" value={inventorySummary?.itemsPurchased ?? 0} />
+                  </div>
+
+                  <h4 style={{ margin: '22px 0 10px' }}>Recent Purchase History</h4>
+                  <table className="table">
+                    <thead><tr><th>Item</th><th>Quantity</th><th>Unit Price</th><th>Total</th><th>Date</th></tr></thead>
+                    <tbody>
+                      {inventoryPurchases.length ? inventoryPurchases.map((purchase: any) => (
+                        <tr key={purchase.id}>
+                          <td>{purchase.item_name}</td><td>{purchase.quantity}</td><td>{fmt(Number(purchase.unit_price))}</td><td>{fmt(Number(purchase.total_amount))}</td><td>{purchase.purchased_at ? new Date(purchase.purchased_at).toLocaleString() : '—'}</td>
+                        </tr>
+                      )) : (
+                        <tr><td colSpan={5} style={{ textAlign: 'center', opacity: 0.7 }}>No purchase records yet.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </Panel>
+              </div>
             </Panel>
           )}
 
