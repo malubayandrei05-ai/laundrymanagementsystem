@@ -807,39 +807,31 @@ export default function App() {
           {/* ================= ADMIN / CUSTOMER DASHBOARD ================= */}
           {page === 'Dashboard' && !staffUser && (
             <>
-              <div className="cards">
-                <Stat icon={ClipboardList} title="Orders" value={orders.length} />
-                <Stat icon={Activity} title="Active Orders" value={activeOrders} />
-                <Stat
-                  icon={Wallet}
-                  title={admin ? 'Payments Received' : 'Total Paid'}
-                  value={fmt(revenue)}
-                />
-                <Stat icon={Wallet} title="Balance Due" value={fmt(outstanding)} />
-              </div>
-
-              {admin && report && (
-                <div className="cards summary">
+              {admin ? (
+                <div className="cards">
+                  <Stat icon={ClipboardList} title="Orders" value={orders.length} />
                   <Stat
                     icon={Users}
                     title="Customers"
-                    value={report.summary?.customer_count || 0}
+                    value={report?.summary?.customer_count || 0}
                   />
                   <Stat
                     icon={Wallet}
                     title="Sales"
-                    value={fmt(report.summary?.sales || 0)}
+                    value={fmt(report?.summary?.paid ?? revenue)}
                   />
                   <Stat
-                    icon={CheckCircle}
-                    title="Collected"
-                    value={fmt(report.summary?.paid || 0)}
+                    icon={Wallet}
+                    title="Balance Due"
+                    value={fmt(report?.summary?.balance ?? outstanding)}
                   />
-                  <Stat
-                    icon={Activity}
-                    title="Unpaid balance"
-                    value={fmt(report.summary?.balance || 0)}
-                  />
+                </div>
+              ) : (
+                <div className="cards">
+                  <Stat icon={ClipboardList} title="Orders" value={orders.length} />
+                  <Stat icon={Activity} title="Active Orders" value={activeOrders} />
+                  <Stat icon={Wallet} title="Total Paid" value={fmt(revenue)} />
+                  <Stat icon={Wallet} title="Balance Due" value={fmt(outstanding)} />
                 </div>
               )}
 

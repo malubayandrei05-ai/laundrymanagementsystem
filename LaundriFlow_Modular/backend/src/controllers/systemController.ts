@@ -9,16 +9,13 @@ const rates = {
   'Dry Cleaning': 100
 };
 
-// =============================================
-// DASHBOARD
-// =============================================
 
 export async function dashboard(req: Request, res: Response) {
   try {
     const isAdmin = req.user.role === 'admin';
     const isStaff = req.user.role === 'staff';
 
-    // ORDERS - use purchase table
+    // ORDERS
     let ordersQuery = `
       SELECT
         o.*,
@@ -45,39 +42,40 @@ export async function dashboard(req: Request, res: Response) {
 
     ordersQuery += ` ORDER BY o.created_at DESC`;
 
-    const [orders] = await pool.query(ordersQuery, orderParams);
+    const [orders]: any = await pool.query(ordersQuery, orderParams);
 
     // INVENTORY
-    const [products] = await pool.query(
+    const [products]: any = await pool.query(
       `SELECT * FROM inventory ORDER BY name`
     );
 
     // STAFF
-const [staff]: any = await pool.query(`
-  SELECT
-    u.id,
-    u.full_name,
-    u.username,
-    sp.staff_type
-  FROM users u
-  INNER JOIN staff_profiles sp ON sp.user_id = u.id
-  WHERE u.active = 1
-  ORDER BY u.full_name ASC
-`);
-    // CUSTOMERS - count registered customer accounts
+    const [staff]: any = await pool.query(`
+      SELECT
+        u.id,
+        u.full_name,
+        u.username,
+        sp.staff_type
+      FROM users u
+      INNER JOIN staff_profiles sp ON sp.user_id = u.id
+      WHERE u.active = 1
+      ORDER BY u.full_name ASC
+    `);
+
+    // CUSTOMERS - registered customer accounts
     const [[customerCount]]: any = await pool.query(`
       SELECT COUNT(*) AS count
       FROM users
       WHERE role = 'customer'
     `);
 
-    // SALES - actual money received from payments
+    // SALES - actual recorded payments received
     const [[paidTotal]]: any = await pool.query(`
-      SELECT COALESCE(SUM(amount_paid), 0) AS total
-      FROM purchase
+      SELECT COALESCE(SUM(amount), 0) AS total
+      FROM payments
     `);
 
-    // BALANCE DUE - remaining unpaid balance
+    // BALANCE DUE - remaining unpaid balances
     const [[balanceTotal]]: any = await pool.query(`
       SELECT COALESCE(SUM(total - amount_paid), 0) AS total
       FROM purchase
@@ -110,6 +108,7 @@ const [staff]: any = await pool.query(`
     });
   }
 }
+
 // =============================================
 // CREATE STAFF
 // =============================================
@@ -759,35 +758,49 @@ export async function inventoryList(req: Request, res: Response) {
 // =============================================
 export async function reports(req: Request, res: Response) {
   try {
-    const [orderStats] = (await pool.query(`
+    // Order and payment summary
+    const [orderStats] = await pool.query(`
       SELECT
-        COUNT(*) AS total_orders,
-        COALESCE(SUM(total), 0) AS total_sales,
-        COALESCE(SUM(amount_paid), 0) AS total_collected,
-        COALESCE(SUM(total - amount_paid), 0) AS total_balance
+        COUNT(*) AS order_count,
+        COALESCE(SUM(total), 0) AS sales,
+        COALESCE(SUM(amount_paid), 0) AS paid,
+        COALESCE(SUM(GREATEST(total - amount_paid, 0)), 0) AS balance
       FROM purchase
-    `)) as any;
+    `) as any;
 
-    const [statusStats] = (await pool.query(`
+    // Registered customers count
+    const [customerStats] = await pool.query(`
+      SELECT COUNT(*) AS customer_count
+      FROM users
+      WHERE role = 'customer'
+    `) as any;
+
+    // Orders grouped by status
+    const [statusStats] = await pool.query(`
       SELECT status, COUNT(*) AS count
       FROM purchase
       GROUP BY status
-    `)) as any;
+    `) as any;
 
-    const [serviceStats] = (await pool.query(`
+    // Orders grouped by service
+    const [serviceStats] = await pool.query(`
       SELECT
         service,
         COUNT(*) AS count,
         COALESCE(SUM(total), 0) AS revenue
       FROM purchase
       GROUP BY service
-    `)) as any;
+    `) as any;
 
     return res.json({
-      summary: orderStats[0],
+      summary: {
+        ...orderStats[0],
+        customer_count: Number(customerStats[0]?.customer_count || 0)
+      },
       ordersByStatus: statusStats,
       ordersByService: serviceStats
     });
+
   } catch (error: any) {
     console.error('Reports error:', error);
 
