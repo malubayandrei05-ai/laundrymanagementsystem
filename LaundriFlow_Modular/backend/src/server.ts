@@ -1,7 +1,7 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import routes from './routes/api.js';
 import { pool } from './config/db.js';
@@ -14,7 +14,7 @@ app.use(cors());
 app.use(express.json());
 
 // API health check
-app.get('/api/health', async (req, res) => {
+app.get('/api/health', async (req: Request, res: Response) => {
     try {
         await pool.query('SELECT 1');
 
@@ -23,7 +23,7 @@ app.get('/api/health', async (req, res) => {
             database: 'connected',
             message: 'LaundriFlow API is working'
         });
-    } catch (error) {
+    } catch (error: any) {
         console.error('Health check failed:', error.message);
 
         res.status(503).json({
@@ -38,7 +38,7 @@ app.get('/api/health', async (req, res) => {
 app.use('/api', routes);
 
 // Error handler
-app.use((err, req, res, next) => {
+app.use((err: any, req: Request, res: Response, next: NextFunction) => {
     console.error('API Error:', err);
 
     res.status(500).json({

@@ -1,6 +1,7 @@
 import { pool } from '../config/db.js';
+import type { Request, Response } from 'express';
 
-export async function recordPayment(req, res) {
+export async function recordPayment(req: Request, res: Response) {
   let conn;
 
   try {
@@ -156,7 +157,7 @@ export async function recordPayment(req, res) {
       }
     });
 
-  } catch (error) {
+  } catch (error: any) {
     if (conn) {
       try {
         await conn.rollback();

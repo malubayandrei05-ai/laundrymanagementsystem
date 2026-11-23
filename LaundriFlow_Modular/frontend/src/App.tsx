@@ -396,52 +396,59 @@ export default function App() {
   }
 
   async function recordPayment(e: React.FormEvent) {
-    e.preventDefault();
+  e.preventDefault();
 
-    if (!payOrder) return;
+  if (!payOrder) return;
 
-    const amount = Number(payAmount);
-    const balance = Number(payOrder.total) - Number(payOrder.amount_paid);
+  const amount = Number(payAmount);
+  const total = Number(payOrder.total);
+  const alreadyPaid = Number(payOrder.amount_paid || 0);
+  const balance = Number((total - alreadyPaid).toFixed(2));
 
-    if (!Number.isFinite(amount) || amount <= 0) {
-      setError('Please enter a valid payment amount.');
-      return;
-    }
-
-    if (amount > balance) {
-      setError(
-        `Payment cannot exceed the remaining balance of ${fmt(balance)}.`
-      );
-      return;
-    }
-
-    try {
-      setBusy(true);
-      setError('');
-
-      const result = await call(
-        'post',
-        `/orders/${payOrder.id}/payments`,
-        { amount }
-      );
-
-      setPayOrder(null);
-      setPayAmount('');
-
-      await load();
-
-      if (Number(result.payment?.balance) <= 0) {
-        setError('Payment completed. Order is now fully PAID.');
-      }
-    } catch (e: any) {
-      setError(
-        e.response?.data?.message || 'Payment failed. Please try again.'
-      );
-    } finally {
-      setBusy(false);
-    }
+  // Validate payment input
+  if (!Number.isFinite(amount) || amount <= 0) {
+    setError('Please enter a valid payment amount.');
+    return;
   }
 
+  // Prevent payment beyond remaining balance
+  if (amount > balance) {
+    setError(`Payment cannot exceed the remaining balance of ${fmt(balance)}.`);
+    return;
+  }
+
+  try {
+    setBusy(true);
+    setError('');
+
+    // Send payment to TypeScript API
+    const result = await call(
+      'post',
+      `/orders/${payOrder.id}/payments`,
+      { amount: amount }
+    );
+
+    // Refresh orders and payment information
+    await load();
+
+    // Close modal after successful payment
+    setPayOrder(null);
+    setPayAmount('');
+
+    // Check if fully paid
+    if (Number(result.payment?.balance) <= 0) {
+      setError('Payment successful! Order is now fully PAID.');
+    }
+
+  } catch (e: any) {
+    setError(
+      e.response?.data?.message ||
+      'Payment failed. Please try again.'
+    );
+  } finally {
+    setBusy(false);
+  }
+}
   async function updateStatus(o: Order, status: string) {
     try {
       setError('');
@@ -789,7 +796,7 @@ export default function App() {
                   orders={orders.filter(o => o.fulfillment === 'Delivery')}
                   admin={false}
                   staffUser={staffUser}
-                  staff={staff}
+                userId={Number(user.id)}
                   onStatus={updateStatus}
                   onPay={setPayOrder}
                 />
@@ -890,7 +897,7 @@ export default function App() {
                   orders={orders.slice(0, 5)}
                   admin={admin}
                   staffUser={staffUser}
-                  staff={staff}
+                userId={Number(user.id)}
                   onStatus={updateStatus}
                   onPay={setPayOrder}
                 />
@@ -920,7 +927,7 @@ export default function App() {
                 }
                 admin={admin}
                 staffUser={staffUser}
-                staff={staff}
+              userId={Number(user.id)}
                 onStatus={updateStatus}
                 onPay={setPayOrder}
               />
@@ -1242,7 +1249,7 @@ export default function App() {
                 orders={orders}
                 admin={admin}
                 staffUser={false}
-                staff={staff}
+              userId={Number(user.id)}
                 onStatus={updateStatus}
                 onPay={setPayOrder}
               />
@@ -1277,24 +1284,29 @@ export default function App() {
               </div>
             </div>
 
-            <form onSubmit={recordPayment} className="stack">
-              <label>
-                Amount received
-                <input
-                  type="number"
-                  min="0.01"
-                  max={Number(payOrder.total) - Number(payOrder.amount_paid)}
-                  step="0.01"
-                  value={payAmount}
-                  onChange={e => setPayAmount(e.target.value)}
-                  required
-                />
-              </label>
+        <form onSubmit={recordPayment} className="stack">
+  <label>
+    Amount received
+    <input
+      type="number"
+      min="0.01"
+      max={Number(payOrder.total) - Number(payOrder.amount_paid)}
+      step="0.01"
+      value={payAmount}
+      onChange={(e) => setPayAmount(e.target.value)}
+      required
+    />
+  </label>
 
-              <button className="btn primary" disabled={busy}>
-                Confirm payment
-              </button>
-            </form>
+<button
+  type="button"
+  className="btn primary"
+  disabled={busy}
+  onClick={() => recordPayment({ preventDefault: () => {} } as React.FormEvent)}
+>
+  {busy ? 'Processing Payment...' : 'Confirm payment'}
+</button>
+</form>
           </div>
         </div>
       )}
@@ -1355,18 +1367,20 @@ function Panel({
 // ==========================
 // ORDER TABLE
 // ==========================
+
+
 function OrderTable({
   orders,
   admin,
   staffUser,
-  staff,
+  userId,
   onStatus,
   onPay
 }: {
   orders: Order[];
   admin: boolean;
   staffUser: boolean;
-  staff: Staff[];
+  userId: number;
   onStatus: (o: Order, s: string) => void;
   onPay: (o: Order) => void;
 }) {
@@ -1389,19 +1403,16 @@ function OrderTable({
 
         <tbody>
           {orders.map(o => {
-            const due = Math.max(
-              0,
-              Number(o.total) - Number(o.amount_paid)
-            );
+            const due = Number(o.total) - Number(o.amount_paid);
+            const fullyPaid = due <= 0;
+            const isDelivery = o.fulfillment === 'Delivery';
+            const isPickup = o.fulfillment === 'Pickup';
 
-            const assignedStaffName =
-              o.delivery_staff_name ||
-              staff.find(
-                s => Number(s.id) === Number(o.delivery_staff_id)
-              )?.full_name ||
-              '—';
+            const isDelivered = o.status === 'Delivered';
+            const isPickedUp = o.status === 'Picked Up';
 
-            const isFullyPaid = due <= 0;
+           const assignedToThisRider =
+  staffUser && Number(o.delivery_staff_id) === Number(userId);
 
             return (
               <tr key={o.id}>
@@ -1409,14 +1420,11 @@ function OrderTable({
                   <b className="ordercode">{o.order_code}</b>
                   <small>
                     {o.customer_code || o.customer_name || 'Customer'} ·{' '}
-                    {o.created_at
-                      ? new Date(o.created_at).toLocaleDateString()
-                      : ''}
+                    {new Date(o.created_at).toLocaleDateString()}
                   </small>
                 </td>
 
                 <td>{o.service}</td>
-
                 <td>{o.weight} kg</td>
 
                 <td>
@@ -1424,11 +1432,7 @@ function OrderTable({
                 </td>
 
                 {admin && (
-                  <td>
-                    {o.fulfillment === 'Delivery'
-                      ? assignedStaffName
-                      : '—'}
-                  </td>
+                  <td>{o.delivery_staff_name || '—'}</td>
                 )}
 
                 <td>{fmt(o.total)}</td>
@@ -1436,14 +1440,14 @@ function OrderTable({
                 <td>
                   <span
                     className={`pill ${
-                      isFullyPaid
+                      fullyPaid
                         ? 'ok'
                         : Number(o.amount_paid) > 0
                         ? 'warn'
                         : 'neutral'
                     }`}
                   >
-                    {isFullyPaid
+                    {fullyPaid
                       ? 'Paid'
                       : Number(o.amount_paid) > 0
                       ? 'Partial'
@@ -1451,7 +1455,7 @@ function OrderTable({
                   </span>
 
                   <small>
-                    {fmt(o.amount_paid)} paid · {fmt(due)} due
+                    {fmt(o.amount_paid)} paid · {fmt(Math.max(0, due))} due
                   </small>
                 </td>
 
@@ -1465,10 +1469,10 @@ function OrderTable({
                       <>
                         <button
                           className="btn small"
-                          disabled={due <= 0}
+                          disabled={fullyPaid}
                           onClick={() => onPay(o)}
                         >
-                          Record payment
+                          {fullyPaid ? 'Paid' : 'Record payment'}
                         </button>
 
                         <select
@@ -1476,32 +1480,51 @@ function OrderTable({
                           value={o.status}
                           onChange={e => onStatus(o, e.target.value)}
                         >
-                          <option>Received</option>
-                          <option>Washing</option>
-                          <option>Drying</option>
-                          <option>Ironing</option>
-                          <option>Completed</option>
-                          <option>Ready for Pickup</option>
-                          <option>Picked Up</option>
-                          <option>For Delivery</option>
+                          {isPickup ? (
+                            <>
+                              <option value="Ready for Pickup">
+                                Pick Up
+                              </option>
+                              <option value="Picked Up">
+                                Picked Up
+                              </option>
+                            </>
+                          ) : (
+                            <>
+                              <option value="For Delivery">
+                                For Delivery
+                              </option>
+                              <option value="Delivered">
+                                Delivered
+                              </option>
+                            </>
+                          )}
                         </select>
                       </>
-                    ) : staffUser ? (
-                      o.status === 'Delivered' ? (
-                        <span className="pill ok">Delivered</span>
+                    ) : staffUser && isDelivery ? (
+  !assignedToThisRider ? (
+    <span>Not assigned</span>
+  ) : isDelivered ? (
+    <span className="pill ok">Delivered ✓</span>
+  ) : !fullyPaid ? (
+    <button className="btn small" disabled>
+      Awaiting payment
+    </button>
+  ) : (
+    <button
+      className="btn small primary"
+      onClick={() => onStatus(o, 'Delivered')}
+    >
+      Done
+    </button>
+  )
+                    ) : staffUser && isPickup ? (
+                      isPickedUp ? (
+                        <span className="pill ok">Picked Up ✓</span>
+                      ) : fullyPaid ? (
+                        <span className="pill ok">Pickup ready</span>
                       ) : (
-                        <button
-                          className="btn small primary"
-                          disabled={!isFullyPaid}
-                          onClick={() => onStatus(o, 'Delivered')}
-                          title={
-                            !isFullyPaid
-                              ? 'Order must be fully paid before completion'
-                              : 'Mark delivery as done'
-                          }
-                        >
-                          {!isFullyPaid ? 'Payment Required' : 'Done'}
-                        </button>
+                        <span>Awaiting payment</span>
                       )
                     ) : null}
                   </td>
@@ -1513,7 +1536,7 @@ function OrderTable({
       </table>
 
       {orders.length === 0 && (
-        <div className="empty">No assigned deliveries yet.</div>
+        <div className="empty">No orders yet.</div>
       )}
     </div>
   );

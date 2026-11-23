@@ -1,5 +1,6 @@
 import { pool } from '../config/db.js';
 import bcrypt from 'bcryptjs';
+import type { Request, Response } from 'express';
 
 const rates = {
   'Wash, Dry & Fold': 50,
@@ -11,12 +12,13 @@ const rates = {
 // =============================================
 // DASHBOARD
 // =============================================
-export async function dashboard(req, res) {
+
+export async function dashboard(req: Request, res: Response) {
   try {
     const isAdmin = req.user.role === 'admin';
     const isStaff = req.user.role === 'staff';
 
-    // ORDERS: use purchase table
+    // ORDERS - use purchase table
     let ordersQuery = `
       SELECT
         o.*,
@@ -28,7 +30,7 @@ export async function dashboard(req, res) {
       LEFT JOIN users d ON d.id = o.delivery_staff_id
     `;
 
-    let orderParams = [];
+    let orderParams: any[] = [];
 
     if (isStaff) {
       ordersQuery += `
@@ -51,31 +53,38 @@ export async function dashboard(req, res) {
     );
 
     // STAFF
-    const [staff] = await pool.query(`
-      SELECT
-        u.id,
-        u.full_name,
-        u.username,
-        sp.staff_type
-      FROM users u
-      INNER JOIN staff_profiles sp ON sp.user_id = u.id
-      WHERE u.active = 1
-      ORDER BY u.full_name ASC
-    `);
-
-    // CUSTOMERS
-    const [[customerCount]] = await pool.query(`
+const [staff]: any = await pool.query(`
+  SELECT
+    u.id,
+    u.full_name,
+    u.username,
+    sp.staff_type
+  FROM users u
+  INNER JOIN staff_profiles sp ON sp.user_id = u.id
+  WHERE u.active = 1
+  ORDER BY u.full_name ASC
+`);
+    // CUSTOMERS - count registered customer accounts
+    const [[customerCount]]: any = await pool.query(`
       SELECT COUNT(*) AS count
       FROM users
       WHERE role = 'customer'
     `);
 
-    // REVENUE: purchase table
-    const [[paidTotal]] = await pool.query(`
+    // SALES - actual money received from payments
+    const [[paidTotal]]: any = await pool.query(`
       SELECT COALESCE(SUM(amount_paid), 0) AS total
       FROM purchase
     `);
 
+    // BALANCE DUE - remaining unpaid balance
+    const [[balanceTotal]]: any = await pool.query(`
+      SELECT COALESCE(SUM(total - amount_paid), 0) AS total
+      FROM purchase
+      WHERE total > amount_paid
+    `);
+
+    // SERVICES
     const services = Object.entries(rates).map(([name, rate]) => ({
       name,
       rate
@@ -86,12 +95,13 @@ export async function dashboard(req, res) {
       products,
       staff,
       staffCount: staff.length,
-      customers: customerCount.count,
-      revenue: paidTotal.total,
+      customers: Number(customerCount.count || 0),
+      revenue: Number(paidTotal.total || 0),
+      balanceDue: Number(balanceTotal.total || 0),
       services
     });
 
-  } catch (error) {
+  } catch (error: any) {
     console.error('DASHBOARD ERROR:', error);
 
     return res.status(500).json({
@@ -100,38 +110,26 @@ export async function dashboard(req, res) {
     });
   }
 }
-
 // =============================================
 // CREATE STAFF
 // =============================================
-export async function createStaff(req, res) {
+export async function createStaff(req: Request, res: Response) {
   let conn;
 
   try {
-    const full_name = String(
-      req.body.full_name ?? req.body.name ?? ''
-    ).trim();
-
-    const username = String(
-      req.body.username ?? ''
-    ).trim();
-
-    const password = String(
-      req.body.password ?? req.body.temporary_password ?? ''
-    ).trim();
+    const full_name = String(req.body.full_name ?? req.body.name ?? '').trim();
+    const username = String(req.body.username ?? '').trim();
+    const password = String(req.body.password ?? req.body.temporary_password ?? '').trim();
 
     let staff_type = String(
       req.body.staff_type ?? req.body.staffType ?? 'laundry'
     ).trim().toLowerCase();
 
-   if (staff_type.includes('delivery')) {
-  staff_type = 'delivery';
-} else if (
-  staff_type.includes('laundry') ||
-  staff_type.includes('staff')
-) {
-  staff_type = 'laundry';
-}
+    if (staff_type.includes('delivery')) {
+      staff_type = 'delivery';
+    } else if (staff_type.includes('laundry') || staff_type.includes('staff')) {
+      staff_type = 'laundry';
+    }
 
     if (!full_name || !username || !password) {
       return res.status(400).json({
@@ -156,20 +154,19 @@ export async function createStaff(req, res) {
     conn = await pool.getConnection();
     await conn.beginTransaction();
 
-    const [existing] = await conn.query(
+    const [existing]: any = await conn.query(
       'SELECT id FROM users WHERE username = ?',
       [username]
     );
 
     if (existing.length > 0) {
       await conn.rollback();
-
       return res.status(409).json({
         message: 'Username already exists.'
       });
     }
 
-    const [userResult] = await conn.query(
+    const [userResult]: any = await conn.query(
       `INSERT INTO users
         (full_name, username, password_hash, role, active)
        VALUES (?, ?, ?, 'staff', 1)`,
@@ -179,8 +176,7 @@ export async function createStaff(req, res) {
     const staffId = userResult.insertId;
 
     await conn.query(
-      `INSERT INTO staff_profiles
-        (user_id, staff_type)
+      `INSERT INTO staff_profiles (user_id, staff_type)
        VALUES (?, ?)`,
       [staffId, staff_type]
     );
@@ -199,7 +195,7 @@ export async function createStaff(req, res) {
       }
     });
 
-  } catch (error) {
+  } catch (error: any) {
     if (conn) {
       try {
         await conn.rollback();
@@ -226,12 +222,13 @@ export async function createStaff(req, res) {
   }
 }
 
+
 // =============================================
 // LIST STAFF
 // =============================================
-export async function listStaff(req, res) {
+export async function listStaff(req: Request, res: Response) {
   try {
-    const [staff] = await pool.query(`
+    const [staff] = (await pool.query(`
       SELECT
         u.id,
         u.full_name,
@@ -245,11 +242,10 @@ export async function listStaff(req, res) {
         ON sp.user_id = u.id
       WHERE u.role = 'staff'
       ORDER BY u.created_at DESC
-    `);
+    `)) as any;
 
     return res.json(staff);
-
-  } catch (error) {
+  } catch (error: any) {
     console.error('LIST STAFF ERROR:', error);
 
     return res.status(500).json({
@@ -262,7 +258,7 @@ export async function listStaff(req, res) {
 // =============================================
 // DEACTIVATE STAFF
 // =============================================
-export async function deactivateStaff(req, res) {
+export async function deactivateStaff(req: Request, res: Response) {
   try {
     const staffId = Number(req.params.id);
 
@@ -278,13 +274,13 @@ export async function deactivateStaff(req, res) {
       });
     }
 
-    const [result] = await pool.query(
+    const [result] = (await pool.query(
       `UPDATE users
        SET active = 0
        WHERE id = ?
        AND role = 'staff'`,
       [staffId]
-    );
+    )) as any;
 
     if (result.affectedRows === 0) {
       return res.status(404).json({
@@ -295,8 +291,7 @@ export async function deactivateStaff(req, res) {
     return res.json({
       message: 'Staff account deactivated successfully.'
     });
-
-  } catch (error) {
+  } catch (error: any) {
     console.error('DEACTIVATE STAFF ERROR:', error);
 
     return res.status(500).json({
@@ -309,7 +304,7 @@ export async function deactivateStaff(req, res) {
 // =============================================
 // CREATE ORDER
 // =============================================
-export async function createOrder(req, res) {
+export async function createOrder(req: Request, res: Response) {
   try {
     const customerId = Number(req.user.id);
 
@@ -317,35 +312,28 @@ export async function createOrder(req, res) {
     const weight = Number(req.body.weight);
     const fulfillment = String(req.body.fulfillment || '').trim();
 
-    // Rider selected by customer
     const deliveryStaffId = req.body.delivery_staff_id
       ? Number(req.body.delivery_staff_id)
       : null;
 
-    // Validate service
     if (!Object.prototype.hasOwnProperty.call(rates, service)) {
       return res.status(400).json({
         message: 'Invalid laundry service selected.'
       });
     }
 
-    // Validate weight
     if (!Number.isFinite(weight) || weight <= 0) {
       return res.status(400).json({
         message: 'Weight must be greater than zero.'
       });
     }
 
-    // Validate fulfillment
     if (!['Pickup', 'Delivery'].includes(fulfillment)) {
       return res.status(400).json({
         message: 'Fulfillment must be Pickup or Delivery.'
       });
     }
 
-    // =============================================
-    // VALIDATE SELECTED DELIVERY RIDER
-    // =============================================
     if (fulfillment === 'Delivery') {
       if (!deliveryStaffId || !Number.isInteger(deliveryStaffId)) {
         return res.status(400).json({
@@ -353,7 +341,7 @@ export async function createOrder(req, res) {
         });
       }
 
-      const [rider] = await pool.query(
+      const [rider] = (await pool.query(
         `SELECT
             u.id,
             u.full_name
@@ -366,7 +354,7 @@ export async function createOrder(req, res) {
            AND sp.staff_type = 'delivery'
          LIMIT 1`,
         [deliveryStaffId]
-      );
+      )) as any;
 
       if (rider.length === 0) {
         return res.status(400).json({
@@ -375,25 +363,18 @@ export async function createOrder(req, res) {
       }
     }
 
-    // Pickup does not need a rider
     const assignedRider =
       fulfillment === 'Delivery'
         ? deliveryStaffId
         : null;
 
-    // =============================================
-    // COMPUTE TOTAL
-    // =============================================
-    const rate = rates[service];
+    const rate = rates[service as keyof typeof rates];
     const total = Number((rate * weight).toFixed(2));
 
     const orderCode =
       `LF-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
-    // =============================================
-    // SAVE ORDER INCLUDING DELIVERY STAFF ID
-    // =============================================
-    const [result] = await pool.query(
+    const [result] = (await pool.query(
       `INSERT INTO purchase (
           order_code,
           customer_id,
@@ -415,11 +396,8 @@ export async function createOrder(req, res) {
         fulfillment,
         assignedRider
       ]
-    );
+    )) as any;
 
-    // =============================================
-    // RESPONSE
-    // =============================================
     return res.status(201).json({
       message: 'Order submitted successfully!',
       order: {
@@ -437,8 +415,7 @@ export async function createOrder(req, res) {
         status: 'Received'
       }
     });
-
-  } catch (error) {
+  } catch (error: any) {
     console.error('CREATE ORDER ERROR:', error);
 
     return res.status(500).json({
@@ -447,19 +424,29 @@ export async function createOrder(req, res) {
     });
   }
 }
+
 // =============================================
 // UPDATE ORDER STATUS
+// PICKUP / DELIVERY LOCK LOGIC
 // =============================================
-export async function updateOrder(req, res) {
+export async function updateOrder(req: Request, res: Response) {
+  let conn: any;
+
   try {
     const orderId = Number(req.params.id);
-    const status = String(req.body.status || '').trim();
+    const requestedStatus = String(req.body.status || '').trim();
 
     const allowedStatuses = [
       'Received',
       'Processing',
-      'Ready',
+      'Washing',
+      'Drying',
+      'Ironing',
       'Completed',
+      'Ready for Pickup',
+      'Picked Up',
+      'For Delivery',
+      'Delivered',
       'Cancelled'
     ];
 
@@ -469,91 +456,220 @@ export async function updateOrder(req, res) {
       });
     }
 
-    if (!allowedStatuses.includes(status)) {
+    if (!allowedStatuses.includes(requestedStatus)) {
       return res.status(400).json({
         message: 'Invalid order status.'
       });
     }
 
-    const [result] = await pool.query(
-      `UPDATE purchase
-       SET status = ?
-       WHERE id = ?`,
-      [status, orderId]
-    );
+    conn = await pool.getConnection();
+    await conn.beginTransaction();
 
-    if (result.affectedRows === 0) {
+    const [rows] = (await conn.query(
+      `SELECT *
+       FROM purchase
+       WHERE id = ?
+       FOR UPDATE`,
+      [orderId]
+    )) as any;
+
+    if (!rows.length) {
+      await conn.rollback();
+
       return res.status(404).json({
         message: 'Order not found.'
       });
     }
 
+    const order = rows[0];
+
+    const total = Number(order.total || 0);
+    const amountPaid = Number(order.amount_paid || 0);
+    const isFullyPaid = amountPaid >= total;
+
+    const isPickup = order.fulfillment === 'Pickup';
+    const isDelivery = order.fulfillment === 'Delivery';
+
+    const isAdmin = req.user.role === 'admin';
+    const isStaff = req.user.role === 'staff';
+
+    const currentStatus = String(order.status || '');
+
+    if (currentStatus === 'Cancelled') {
+      await conn.rollback();
+
+      return res.status(403).json({
+        message: 'Cancelled orders cannot be changed.'
+      });
+    }
+
+    if (isPickup && isFullyPaid) {
+      if (currentStatus === 'Picked Up') {
+        await conn.rollback();
+
+        return res.status(403).json({
+          message: 'This Pickup order is already picked up and locked.'
+        });
+      }
+
+      if (requestedStatus !== 'Picked Up') {
+        await conn.rollback();
+
+        return res.status(403).json({
+          message: 'This Pickup order is locked because it is fully paid. Only Picked Up is allowed.'
+        });
+      }
+    }
+
+    if (isDelivery && currentStatus === 'Delivered') {
+      await conn.rollback();
+
+      return res.status(403).json({
+        message: 'This Delivery order is already delivered and locked.'
+      });
+    }
+
+    if (isStaff && isDelivery) {
+      if (Number(order.delivery_staff_id) !== Number(req.user.id)) {
+        await conn.rollback();
+
+        return res.status(403).json({
+          message: 'You are not assigned to this delivery.'
+        });
+      }
+
+      if (requestedStatus !== 'Delivered') {
+        await conn.rollback();
+
+        return res.status(403).json({
+          message: 'Riders can only mark delivery orders as Delivered.'
+        });
+      }
+
+      if (!isFullyPaid) {
+        await conn.rollback();
+
+        return res.status(403).json({
+          message: 'Delivery cannot be completed until the order is fully paid.'
+        });
+      }
+
+     // Prevent marking already delivered orders again
+if (currentStatus === 'Delivered') {
+  await conn.rollback();
+
+  return res.status(403).json({
+    message: 'This order has already been delivered.'
+  });
+}
+    }
+
+    if (
+      isDelivery &&
+      requestedStatus === 'For Delivery' &&
+      !isFullyPaid
+    ) {
+      await conn.rollback();
+
+      return res.status(403).json({
+        message: 'Delivery order must be fully paid before it can be sent to the rider.'
+      });
+    }
+
+    if (
+      isPickup &&
+      requestedStatus === 'Ready for Pickup' &&
+      !isFullyPaid
+    ) {
+      await conn.rollback();
+
+      return res.status(403).json({
+        message: 'Pickup order must be fully paid before it can be marked Ready for Pickup.'
+      });
+    }
+
+    if (isPickup && requestedStatus === 'Delivered') {
+      await conn.rollback();
+
+      return res.status(400).json({
+        message: 'Pickup orders cannot be marked Delivered.'
+      });
+    }
+
+    if (isDelivery && requestedStatus === 'Picked Up') {
+      await conn.rollback();
+
+      return res.status(400).json({
+        message: 'Delivery orders cannot be marked Picked Up.'
+      });
+    }
+
+    const [result] = (await conn.query(
+      `UPDATE purchase
+       SET status = ?
+       WHERE id = ?`,
+      [requestedStatus, orderId]
+    )) as any;
+
+    if (result.affectedRows === 0) {
+      await conn.rollback();
+
+      return res.status(404).json({
+        message: 'Order not found.'
+      });
+    }
+
+    await conn.commit();
+
     return res.json({
       message: 'Order status updated successfully.',
       order: {
         id: orderId,
-        status
+        status: requestedStatus,
+        fulfillment: order.fulfillment,
+        total,
+        amount_paid: amountPaid,
+        isFullyPaid,
+        isLocked:
+          (isPickup && isFullyPaid) ||
+          (isDelivery && requestedStatus === 'Delivered')
       }
     });
+  } catch (error: any) {
+    if (conn) {
+      try {
+        await conn.rollback();
+      } catch {}
+    }
 
-  } catch (error) {
     console.error('UPDATE ORDER STATUS ERROR:', error);
 
     return res.status(500).json({
       message: 'Failed to update order status.',
       error: error.message
     });
-  }
-}
-
-// =============================================
-// ADD INVENTORY ITEM
-// =============================================
-export async function addInventory(req, res) {
-  try {
-    const { name, unit, quantity, price } = req.body;
-
-    if (!name || quantity === undefined || price === undefined) {
-      return res.status(400).json({
-        message: 'Name, quantity, and price are required.'
-      });
+  } finally {
+    if (conn) {
+      conn.release();
     }
-
-    const [result] = await pool.query(
-      `INSERT INTO inventory (name, unit, quantity, price)
-       VALUES (?, ?, ?, ?)`,
-      [name, unit || 'pcs', quantity, price]
-    );
-
-    return res.status(201).json({
-      message: 'Inventory item added successfully.',
-      id: result.insertId
-    });
-
-  } catch (error) {
-    console.error('Add inventory error:', error);
-
-    return res.status(500).json({
-      message: 'Failed to add inventory item.',
-      error: error.message
-    });
   }
 }
+
 
 // =============================================
 // UPDATE INVENTORY
 // =============================================
-export async function updateInventory(req, res) {
+export async function updateInventory(req: Request, res: Response) {
   try {
     const { id } = req.params;
     const { name, unit, quantity, price } = req.body;
 
-    const [result] = await pool.query(
+    const [result] = (await pool.query(
       `UPDATE inventory
        SET name = ?, unit = ?, quantity = ?, price = ?
        WHERE id = ?`,
       [name, unit, quantity, price, id]
-    );
+    )) as any;
 
     if (result.affectedRows === 0) {
       return res.status(404).json({
@@ -564,8 +680,7 @@ export async function updateInventory(req, res) {
     return res.json({
       message: 'Inventory updated successfully.'
     });
-
-  } catch (error) {
+  } catch (error: any) {
     console.error('Update inventory error:', error);
 
     return res.status(500).json({
@@ -577,31 +692,43 @@ export async function updateInventory(req, res) {
 
 // =============================================
 // STAFF ORDERS
+// RIDER: GET ONLY THEIR ASSIGNED DELIVERIES
 // =============================================
-export async function staffOrders(req, res) {
+export async function staffOrders(req: Request, res: Response) {
   try {
-    const staffId = req.user.id;
+    const staffId = Number(req.user.id);
 
-    const [orders] = await pool.query(
+    if (!staffId) {
+      return res.status(401).json({
+        message: 'Unauthorized rider.'
+      });
+    }
+
+    const [orders] = (await pool.query(
       `SELECT
-        o.*,
-        u.full_name AS customer_name,
-        u.customer_code
+          o.*,
+          u.full_name AS customer_name,
+          u.customer_code,
+          d.full_name AS delivery_staff_name
        FROM purchase o
-       JOIN users u ON o.customer_id = u.id
+       INNER JOIN users u
+          ON u.id = o.customer_id
+       LEFT JOIN users d
+          ON d.id = o.delivery_staff_id
        WHERE o.delivery_staff_id = ?
-       AND o.fulfillment = 'Delivery'
+         AND o.fulfillment = 'Delivery'
        ORDER BY o.created_at DESC`,
       [staffId]
-    );
+    )) as any;
 
-    return res.json(orders);
-
-  } catch (error) {
-    console.error('Staff orders error:', error);
+    return res.json({
+      orders
+    });
+  } catch (error: any) {
+    console.error('STAFF ORDERS ERROR:', error);
 
     return res.status(500).json({
-      message: 'Failed to load staff orders.',
+      message: 'Failed to load assigned deliveries.',
       error: error.message
     });
   }
@@ -610,15 +737,14 @@ export async function staffOrders(req, res) {
 // =============================================
 // INVENTORY LIST
 // =============================================
-export async function inventoryList(req, res) {
+export async function inventoryList(req: Request, res: Response) {
   try {
-    const [items] = await pool.query(
+    const [items] = (await pool.query(
       'SELECT * FROM inventory ORDER BY name ASC'
-    );
+    )) as any;
 
     return res.json(items);
-
-  } catch (error) {
+  } catch (error: any) {
     console.error('Inventory list error:', error);
 
     return res.status(500).json({
@@ -631,39 +757,38 @@ export async function inventoryList(req, res) {
 // =============================================
 // REPORTS
 // =============================================
-export async function reports(req, res) {
+export async function reports(req: Request, res: Response) {
   try {
-    const [orderStats] = await pool.query(`
+    const [orderStats] = (await pool.query(`
       SELECT
         COUNT(*) AS total_orders,
         COALESCE(SUM(total), 0) AS total_sales,
         COALESCE(SUM(amount_paid), 0) AS total_collected,
         COALESCE(SUM(total - amount_paid), 0) AS total_balance
       FROM purchase
-    `);
+    `)) as any;
 
-    const [statusStats] = await pool.query(`
+    const [statusStats] = (await pool.query(`
       SELECT status, COUNT(*) AS count
       FROM purchase
       GROUP BY status
-    `);
+    `)) as any;
 
-    const [serviceStats] = await pool.query(`
+    const [serviceStats] = (await pool.query(`
       SELECT
         service,
         COUNT(*) AS count,
         COALESCE(SUM(total), 0) AS revenue
       FROM purchase
       GROUP BY service
-    `);
+    `)) as any;
 
     return res.json({
       summary: orderStats[0],
       ordersByStatus: statusStats,
       ordersByService: serviceStats
     });
-
-  } catch (error) {
+  } catch (error: any) {
     console.error('Reports error:', error);
 
     return res.status(500).json({
@@ -672,49 +797,3 @@ export async function reports(req, res) {
     });
   }
 }
-const confirmPayment = async (orderId, amount) => {
-  try {
-    const token =
-      localStorage.getItem('token') ||
-      localStorage.getItem('laundriflow_token') ||
-      localStorage.getItem('authToken');
-
-    const response = await fetch(
-      `http://localhost:4000/api/orders/${orderId}/payments`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          amount: Number(amount),
-        }),
-      }
-    );
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(data.message || 'Payment failed');
-    }
-
-    alert(
-      data.payment.balance <= 0
-        ? 'Payment successful! Order is now fully PAID.'
-        : `Payment recorded! Remaining balance: ₱${Number(
-            data.payment.balance
-          ).toFixed(2)}`
-    );
-
-    // Close payment modal
-    setPaymentModal(null);
-
-    // Refresh dashboard/order list
-    await loadDashboard();
-
-  } catch (error) {
-    console.error('CONFIRM PAYMENT ERROR:', error);
-    alert(error.message || 'Failed to confirm payment.');
-  }
-};

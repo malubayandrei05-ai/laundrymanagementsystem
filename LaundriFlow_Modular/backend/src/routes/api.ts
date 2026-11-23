@@ -3,6 +3,7 @@ import { auth, role } from '../middleware/auth.js';
 
 import * as A from '../controllers/authController.js';
 import * as S from '../controllers/systemController.js';
+
 import * as P from '../controllers/paymentController.js';
 
 const r = Router();
@@ -44,12 +45,6 @@ r.post(
   P.recordPayment
 );
 
-// ==========================
-// INVENTORY
-// ==========================
-r.get('/inventory', auth, role('admin'), S.inventoryList);
-r.post('/inventory', auth, role('admin'), S.addInventory);
-r.patch('/inventory/:id', auth, role('admin'), S.updateInventory);
 
 // ==========================
 // REPORTS
@@ -62,3 +57,11 @@ r.get('/reports', auth, role('admin'), S.reports);
 r.get('/staff/orders', auth, role('staff'), S.staffOrders);
 
 export default r;
+console.log('POST ROUTE CHECK:', {
+  setupAdmin: typeof A.setupAdmin,
+  registerCustomer: typeof A.registerCustomer,
+  login: typeof A.login,
+  createStaff: typeof S.createStaff,
+  createOrder: typeof S.createOrder,
+  recordPayment: typeof P.recordPayment
+});
