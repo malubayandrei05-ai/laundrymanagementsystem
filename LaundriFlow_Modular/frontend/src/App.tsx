@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
+
 import {
   Activity,
   ChartNoAxesCombined,
@@ -15,6 +16,7 @@ import {
   UserRound,
   Home,
   CheckCircle
+  
 } from 'lucide-react';
 
 const API = 'http://localhost:4000/api';
@@ -88,6 +90,7 @@ export default function App() {
   const [buyQuantities, setBuyQuantities] = useState<Record<number, string>>({});
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [seenOrderIds, setSeenOrderIds] = useState<number[]>([]);
 
   const [orderForm, setOrderForm] = useState<{
     service: string;
@@ -100,6 +103,7 @@ export default function App() {
     fulfillment: 'Pickup',
     delivery_staff_id: ''
   });
+  
 
   const [staffForm, setStaffForm] = useState({
     full_name: '',
@@ -448,64 +452,43 @@ export default function App() {
     }
   }
 
-  async function recordPayment(e: React.FormEvent) {
-  e.preventDefault();
+  async function recordPayment(e?: React.FormEvent) {
+  e?.preventDefault();
 
   if (!payOrder) return;
 
   const amount = Number(payAmount);
-  const total = Number(payOrder.total);
-  const alreadyPaid = Number(payOrder.amount_paid || 0);
-  const balance = Number((total - alreadyPaid).toFixed(2));
+  const balance = Number(payOrder.total) - Number(payOrder.amount_paid);
 
-  // Validate payment input
   if (!Number.isFinite(amount) || amount <= 0) {
     setError('Please enter a valid payment amount.');
     return;
   }
 
-  // Prevent payment beyond remaining balance
   if (amount > balance) {
-    setError(`Payment cannot exceed the remaining balance of ${fmt(balance)}.`);
+    setError(`Amount cannot exceed the remaining balance of ${fmt(balance)}.`);
     return;
   }
 
   try {
-    setBusy(true);
     setError('');
+    setBusy(true);
 
-    // Send payment to TypeScript API
-    const result = await call(
+    await call(
       'post',
       `/orders/${payOrder.id}/payments`,
-      { amount: amount }
+      { amount }
     );
 
-    // If a Pickup order becomes fully paid, automatically mark it Picked Up.
-    const remainingBalance = Number(result.payment?.balance);
-    if (remainingBalance <= 0 && payOrder.fulfillment === 'Pickup') {
-      await call('patch', `/orders/${payOrder.id}/status`, { status: 'Picked Up' });
-    }
-
-    // Refresh orders and payment information after payment/status updates
-    await load();
-
-    // Close modal after successful payment
     setPayOrder(null);
     setPayAmount('');
 
-    // Show the appropriate success message
-    if (remainingBalance <= 0) {
-      setError(
-        payOrder.fulfillment === 'Pickup'
-          ? 'Payment successful! Pickup order is now marked Picked Up.'
-          : 'Payment successful! Order is now fully PAID.'
-      );
-    }
+    await load();
 
   } catch (e: any) {
     setError(
       e.response?.data?.message ||
+      e.message ||
       'Payment failed. Please try again.'
     );
   } finally {
@@ -525,7 +508,11 @@ export default function App() {
   const admin = user?.role === 'admin';
   const customer = user?.role === 'customer';
   const staffUser = user?.role === 'staff';
-
+const newOrderCount = orders.filter(
+  order =>
+    String(order.status).toLowerCase() === 'received' &&
+    !seenOrderIds.includes(order.id)
+).length;
   const activeOrders = orders.filter(
     o => !['Delivered', 'Picked Up'].includes(o.status)
   ).length;
@@ -713,16 +700,51 @@ export default function App() {
                 ['Dashboard', Home],
                 ['Assigned Deliveries', Truck]
               ]
-          ).map(([title, Icon]: any) => (
-            <button
-              className={page === title ? 'active' : ''}
-              onClick={() => setPage(title)}
-              key={title}
-            >
-              <Icon size={18} />
-              {title}
-            </button>
-          ))}
+       ).map(([title, Icon]: any) => (
+  <button
+    className={page === title ? 'active' : ''}
+  onClick={() => {
+  setPage(title);
+
+  if (admin && title === 'Orders') {
+    const ids = orders
+      .filter(order => String(order.status).toLowerCase() === 'received')
+      .map(order => order.id);
+
+    const updated = [...new Set([...seenOrderIds, ...ids])];
+
+    setSeenOrderIds(updated);
+    localStorage.setItem('lf-seen-orders', JSON.stringify(updated));
+  }
+}}
+    key={title}
+  >
+    <Icon size={18} />
+    {title}
+
+    {admin && title === 'Orders' && newOrderCount > 0 && (
+      <span
+        style={{
+          marginLeft: 'auto',
+          minWidth: 20,
+          height: 20,
+          padding: '0 6px',
+          borderRadius: 20,
+          backgroundColor: '#E53945',
+          color: '#FFFFFF',
+          fontSize: 11,
+          fontWeight: 800,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        {newOrderCount > 99 ? '99+' : newOrderCount}
+      </span>
+    )}
+  </button>
+))}
+
         </nav>
 
         <div className="sidebottom">
@@ -976,6 +998,7 @@ export default function App() {
               />
             </Panel>
           )}
+          
 
           {/* ================= NEW ORDER ================= */}
           {page === 'New Order' && customer && (
@@ -1309,42 +1332,127 @@ export default function App() {
             </Panel>
           )}
 
-          {/* ================= REPORTS ================= */}
-          {page === 'Reports' && admin && (
-            <Panel title="Reports" subtitle="Sales and payment summary">
-              <div className="cards">
-                <Stat
-                  icon={ClipboardList}
-                  title="Orders"
-                  value={report?.summary?.order_count || 0}
-                />
-                <Stat
-                  icon={Wallet}
-                  title="Sales"
-                  value={fmt(report?.summary?.sales || 0)}
-                />
-                <Stat
-                  icon={CheckCircle}
-                  title="Payments received"
-                  value={fmt(report?.summary?.paid || 0)}
-                />
-                <Stat
-                  icon={Wallet}
-                  title="Balance due"
-                  value={fmt(report?.summary?.balance || 0)}
-                />
-              </div>
+         {/* ================= REPORTS ================= */}
+{page === 'Reports' && admin && (
+  <Panel title="Reports" subtitle="Sales and payment summary">
+    <div className="cards">
+      <Stat
+        icon={ClipboardList}
+        title="Orders"
+        value={report?.summary?.order_count || 0}
+      />
 
-              <OrderTable
-                orders={orders}
-                admin={admin}
-                staffUser={false}
-              userId={Number(user.id)}
-                onStatus={updateStatus}
-                onPay={setPayOrder}
-              />
-            </Panel>
-          )}
+      <Stat
+        icon={Wallet}
+        title="Sales"
+        value={fmt(report?.summary?.sales || 0)}
+      />
+
+      <Stat
+        icon={CheckCircle}
+        title="Payments received"
+        value={fmt(report?.summary?.paid || 0)}
+      />
+
+      <Stat
+        icon={Wallet}
+        title="Balance due"
+        value={fmt(report?.summary?.balance || 0)}
+      />
+    </div>
+
+    {/* REPORT ORDER HISTORY */}
+    <div className="tablewrap">
+      <table className="table">
+        <thead>
+          <tr>
+            <th>Order / Customer</th>
+            <th>Service</th>
+            <th>Weight</th>
+            <th>Fulfillment</th>
+            <th>Total</th>
+            <th>Payment</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+
+        <tbody>
+          {orders.map(o => {
+            const due =
+              Number(o.total) - Number(o.amount_paid);
+
+            const fullyPaid = due <= 0;
+
+            return (
+              <tr key={o.id}>
+                {/* CUSTOMER NAME OR CUSTOMER ID */}
+                <td>
+                  <b className="ordercode">
+                    {o.customer_code || o.customer_name || 'Customer'}
+                  </b>
+                </td>
+
+                {/* SERVICE */}
+                <td>{o.service}</td>
+
+                {/* WEIGHT */}
+                <td>{o.weight} kg</td>
+
+                {/* PICKUP OR DELIVERY */}
+                <td>
+                  <span className="pill">
+                    {o.fulfillment}
+                  </span>
+                </td>
+
+                {/* ORDER TOTAL */}
+                <td>{fmt(o.total)}</td>
+
+                {/* PAYMENT */}
+                <td>
+                  <span
+                    className={`pill ${
+                      fullyPaid
+                        ? 'ok'
+                        : Number(o.amount_paid) > 0
+                        ? 'warn'
+                        : 'neutral'
+                    }`}
+                  >
+                    {fullyPaid
+                      ? 'Paid'
+                      : Number(o.amount_paid) > 0
+                      ? 'Partial'
+                      : 'Unpaid'}
+                  </span>
+
+                  <small>
+                    {fmt(o.amount_paid)} paid ·{' '}
+                    {fmt(Math.max(0, due))} due
+                  </small>
+                </td>
+
+                {/* ORDER STATUS */}
+                <td>
+                  <span className="pill">
+                    {o.status}
+                  </span>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+
+      {orders.length === 0 && (
+        <div className="empty">
+          No orders yet.
+        </div>
+      )}
+    </div>
+  </Panel>
+)}
+          
         </div>
       </main>
 
@@ -1389,12 +1497,11 @@ export default function App() {
   </label>
 
 <button
-  type="button"
+  type="submit"
   className="btn primary"
-  disabled={busy}
-  onClick={() => recordPayment({ preventDefault: () => {} } as React.FormEvent)}
+  disabled={busy || !payAmount || Number(payAmount) <= 0}
 >
-  {busy ? 'Processing Payment...' : 'Confirm payment'}
+  {busy ? 'Processing payment...' : 'Confirm payment'}
 </button>
 </form>
           </div>
@@ -1630,3 +1737,4 @@ function OrderTable({
     </div>
   );
 }
+
