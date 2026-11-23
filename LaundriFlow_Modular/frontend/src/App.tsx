@@ -428,16 +428,26 @@ export default function App() {
       { amount: amount }
     );
 
-    // Refresh orders and payment information
+    // If a Pickup order becomes fully paid, automatically mark it Picked Up.
+    const remainingBalance = Number(result.payment?.balance);
+    if (remainingBalance <= 0 && payOrder.fulfillment === 'Pickup') {
+      await call('patch', `/orders/${payOrder.id}/status`, { status: 'Picked Up' });
+    }
+
+    // Refresh orders and payment information after payment/status updates
     await load();
 
     // Close modal after successful payment
     setPayOrder(null);
     setPayAmount('');
 
-    // Check if fully paid
-    if (Number(result.payment?.balance) <= 0) {
-      setError('Payment successful! Order is now fully PAID.');
+    // Show the appropriate success message
+    if (remainingBalance <= 0) {
+      setError(
+        payOrder.fulfillment === 'Pickup'
+          ? 'Payment successful! Pickup order is now marked Picked Up.'
+          : 'Payment successful! Order is now fully PAID.'
+      );
     }
 
   } catch (e: any) {
@@ -881,19 +891,7 @@ export default function App() {
                 </Panel>
               )}
 
-              <Panel
-                title={customer ? 'My latest orders' : 'Latest orders'}
-                subtitle="Recent laundry activity"
-              >
-                <OrderTable
-                  orders={orders.slice(0, 5)}
-                  admin={admin}
-                  staffUser={staffUser}
-                userId={Number(user.id)}
-                  onStatus={updateStatus}
-                  onPay={setPayOrder}
-                />
-              </Panel>
+             
             </>
           )}
 
@@ -1467,31 +1465,30 @@ function OrderTable({
                           {fullyPaid ? 'Paid' : 'Record payment'}
                         </button>
 
-                        <select
-                          className="statusselect"
-                          value={o.status}
-                          onChange={e => onStatus(o, e.target.value)}
-                        >
-                          {isPickup ? (
-                            <>
-                              <option value="Ready for Pickup">
-                                Pick Up
-                              </option>
-                              <option value="Picked Up">
-                                Picked Up
-                              </option>
-                            </>
-                          ) : (
-                            <>
+                        {(isDelivery && isDelivered) || (isPickup && isPickedUp) ? (
+                          <span className="pill ok">{isDelivery ? 'Delivered ✓' : 'Picked Up ✓'}</span>
+                        ) : (
+                          <select
+                            className="statusselect"
+                            value={o.status}
+                            onChange={e => onStatus(o, e.target.value)}
+                          >
+                            {isPickup ? (
+                              <>
+                                <option value="Ready for Pickup">
+                                  Pick Up
+                                </option>
+                                <option value="Picked Up">
+                                  Picked Up
+                                </option>
+                              </>
+                            ) : (
                               <option value="For Delivery">
                                 For Delivery
                               </option>
-                              <option value="Delivered">
-                                Delivered
-                              </option>
-                            </>
-                          )}
-                        </select>
+                            )}
+                          </select>
+                        )}
                       </>
                     ) : staffUser && isDelivery ? (
   !assignedToThisRider ? (
